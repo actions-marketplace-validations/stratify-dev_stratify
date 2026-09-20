@@ -1200,6 +1200,43 @@ mod tests {
         std::env::remove_var("TYPESAFE_API_KEY");
         assert!(Client::from_env().is_none());
     }
+
+    #[test]
+    fn a_key_that_is_absent_empty_or_whitespace_is_not_usable() {
+        assert_eq!(usable_key(None), None);
+        assert_eq!(usable_key(Some(String::new())), None);
+        assert_eq!(usable_key(Some("   \t\n  ".into())), None);
+    }
+
+    #[test]
+    fn a_real_key_is_usable_and_kept_verbatim() {
+        assert_eq!(
+            usable_key(Some("  sk-abc123  ".into())),
+            Some("  sk-abc123  ".to_string()),
+            "trimming is a usability test, not a transformation: the key is sent as given"
+        );
+    }
+
+    #[test]
+    fn backoff_delay_doubles_each_attempt_and_caps_the_factor() {
+        let base = Duration::from_millis(10);
+        assert_eq!(backoff_delay(base, 1), Duration::from_millis(10));
+        assert_eq!(backoff_delay(base, 2), Duration::from_millis(20));
+        assert_eq!(backoff_delay(base, 3), Duration::from_millis(40));
+        // The shift is capped at 6, so the factor stops doubling at 64.
+        assert_eq!(backoff_delay(base, 7), Duration::from_millis(640));
+        assert_eq!(backoff_delay(base, 20), Duration::from_millis(640));
+    }
+
+    #[test]
+    fn backoff_delay_saturates_instead_of_overflowing() {
+        // This is the case that would panic inside ask()'s call graph.
+        assert_eq!(backoff_delay(Duration::MAX, 4), Duration::MAX);
+        assert_eq!(
+            backoff_delay(Duration::from_secs(u64::MAX / 2), 7),
+            Duration::MAX
+        );
+    }
 }
 ```
 
@@ -1246,6 +1283,35 @@ impl Default for RetryPolicy {
     }
 }
 
+/// The delay before retry `attempt`. Doubles each attempt with the factor
+/// capped at `1 << 6`, and saturates rather than overflowing.
+///
+/// Pure and separate from the sleep so the arithmetic is testable. Testing
+/// it through `ask` is not possible: reaching a retry means the test would
+/// then sleep for the very duration under test.
+///
+/// Saturating matters because `ask` must never panic, `Duration`'s
+/// `Mul<u32>` panics on overflow, and `base_delay` is a public field a
+/// caller can set to anything.
+fn backoff_delay(base: Duration, attempt: u32) -> Duration {
+    let factor = 1u32 << (attempt.saturating_sub(1)).min(6);
+    base.saturating_mul(factor)
+}
+
+/// The key rule, separated from the env read so it is testable without
+/// mutating process-global state. Rust runs tests in one process across
+/// threads, so a test that sets an env var races every other test that
+/// reads one. An empty key is worse than no key: it would send `Bearer `
+/// and earn a 401 on every request instead of cleanly running without
+/// judgment.
+fn usable_key(raw: Option<String>) -> Option<String> {
+    let key = raw?;
+    if key.trim().is_empty() {
+        return None;
+    }
+    Some(key)
+}
+
 pub struct Client {
     http: reqwest::Client,
     base: String,
@@ -1266,13 +1332,10 @@ impl Client {
         }
     }
 
-    /// None when TYPESAFE_API_KEY is unset or empty. The caller treats that
-    /// as "run without judgment", never as an error.
+    /// None when TYPESAFE_API_KEY is unset, empty, or whitespace only. The
+    /// caller treats that as "run without judgment", never as an error.
     pub fn from_env() -> Option<Client> {
-        let key = std::env::var(ENV_API_KEY).ok()?;
-        if key.trim().is_empty() {
-            return None;
-        }
+        let key = usable_key(std::env::var(ENV_API_KEY).ok())?;
         Some(Client::new(DEFAULT_BASE_URL.to_string(), key))
     }
 
@@ -1335,8 +1398,7 @@ impl Client {
     }
 
     async fn backoff(&self, attempt: u32) {
-        let factor = 1u32 << (attempt.saturating_sub(1)).min(6);
-        tokio::time::sleep(self.retry.base_delay * factor).await;
+        tokio::time::sleep(backoff_delay(self.retry.base_delay, attempt)).await;
     }
 }
 ```
