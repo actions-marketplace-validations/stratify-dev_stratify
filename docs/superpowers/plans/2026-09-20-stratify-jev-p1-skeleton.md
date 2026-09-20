@@ -3542,7 +3542,9 @@ tempfile = "3"
 
 - [ ] **Step 2: Create the report fixture**
 
-`tests/fixtures/report-dead-code.json`:
+`tests/fixtures/report-dead-code.json`. The byte ranges are the real spans of
+`helper` (43..72) and `used` (0..41) in `tests/fixtures/sample-repo/src/lib.rs`,
+so the fixture behaves the way a genuine engine report would:
 
 ```json
 {
@@ -3552,14 +3554,14 @@ tempfile = "3"
       "rule": "dead_code",
       "severity": "info",
       "message": "possibly unused function `helper`",
-      "span": { "file": "src/lib.rs", "start_byte": 44, "end_byte": 53, "start_line": 5 },
+      "span": { "file": "src/lib.rs", "start_byte": 43, "end_byte": 72, "start_line": 5 },
       "confidence": "likely"
     },
     {
       "rule": "complexity",
       "severity": "warning",
       "message": "function `used` has cyclomatic complexity 12",
-      "span": { "file": "src/lib.rs", "start_byte": 0, "end_byte": 30, "start_line": 1 },
+      "span": { "file": "src/lib.rs", "start_byte": 0, "end_byte": 41, "start_line": 1 },
       "confidence": "certain"
     }
   ]
