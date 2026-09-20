@@ -252,7 +252,7 @@ impl Report {
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `cargo test -p stratify-jev-judge`
-Expected: PASS, 3 tests.
+Expected: PASS. The three `model::tests` cases all pass and the output is free of warnings.
 
 - [ ] **Step 6: Commit**
 
@@ -641,7 +641,7 @@ pub mod context;
 - [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `cargo test -p stratify-jev-judge`
-Expected: PASS, 7 tests.
+Expected: PASS. Every `context::tests` case passes, including the three regression cases (`a_span_landing_mid_character_does_not_panic`, `a_single_star_glob_does_not_cross_a_directory_separator`, `a_missing_root_is_an_error_not_an_empty_inventory`), and the whole workspace is green.
 
 - [ ] **Step 7: Commit**
 
@@ -1035,7 +1035,7 @@ pub struct SystemOneResponse {
 - [ ] **Step 8: Run all tests**
 
 Run: `cargo test`
-Expected: PASS, 14 tests across both crates.
+Expected: PASS. Every `jev-client` case passes, including `every_answer_variant_survives_a_json_round_trip`, and the whole workspace is green.
 
 - [ ] **Step 9: Commit**
 
@@ -1352,7 +1352,7 @@ pub use client::{Client, ClientError, RetryPolicy, DEFAULT_BASE_URL, ENV_API_KEY
 - [ ] **Step 5: Run to verify it passes**
 
 Run: `cargo test -p jev-client`
-Expected: PASS, 13 tests.
+Expected: PASS. All six new `client::tests` cases pass and the whole workspace is green.
 
 - [ ] **Step 6: Commit**
 
@@ -1555,7 +1555,7 @@ pub mod verdict;
 - [ ] **Step 4: Run to verify it passes**
 
 Run: `cargo test -p stratify-jev-judge`
-Expected: PASS, 13 tests.
+Expected: PASS. All six new `verdict::tests` cases pass and the whole workspace is green.
 
 - [ ] **Step 5: Commit**
 
@@ -1813,7 +1813,7 @@ pub mod cache;
 - [ ] **Step 5: Run to verify it passes**
 
 Run: `cargo test -p stratify-jev-judge`
-Expected: PASS, 18 tests.
+Expected: PASS. All five new `cache::tests` cases pass and the whole workspace is green.
 
 - [ ] **Step 6: Commit**
 
@@ -2030,7 +2030,7 @@ pub mod config;
 - [ ] **Step 4: Run to verify it passes**
 
 Run: `cargo test -p stratify-jev-judge`
-Expected: PASS, 22 tests.
+Expected: PASS. All four new `config::tests` cases pass and the whole workspace is green.
 
 - [ ] **Step 5: Commit**
 
@@ -2598,7 +2598,7 @@ pub mod judges;
 - [ ] **Step 5: Run to verify it passes**
 
 Run: `cargo test -p stratify-jev-judge`
-Expected: PASS, 34 tests.
+Expected: PASS. Every `judges::dead_code::tests` case passes, including the two `attributes_*` regression cases, and the whole workspace is green.
 
 - [ ] **Step 6: Commit**
 
@@ -3116,7 +3116,7 @@ Add `#[derive(Clone)]` to `Finding` and `Report` if not already present (Task 1 
 - [ ] **Step 5: Run to verify it passes**
 
 Run: `cargo test -p stratify-jev-judge`
-Expected: PASS, 41 tests.
+Expected: PASS. Every `driver::tests` case passes, including the three `plan_batches` cases and the four async cases, and the whole workspace is green.
 
 - [ ] **Step 6: Commit**
 
@@ -3434,7 +3434,7 @@ pub fn render(report: &Report, tool_version: &str) -> String {
 - [ ] **Step 5: Run to verify they pass**
 
 Run: `cargo test -p stratify-jev-cli`
-Expected: PASS, 7 tests.
+Expected: PASS. All `output::human::tests` and `output::json::tests` cases pass and the whole workspace is green.
 
 - [ ] **Step 6: Commit**
 
@@ -3821,7 +3821,7 @@ fn exit_code(args: &Args, report: &Report) -> ExitCode {
 - [ ] **Step 6: Run to verify it passes**
 
 Run: `cargo test`
-Expected: PASS, all tests across three crates.
+Expected: PASS. Every test in all three crates passes, including the five integration cases in `crates/stratify-jev-cli/tests/cli.rs`, and the output is free of warnings.
 
 - [ ] **Step 7: Write the README**
 
