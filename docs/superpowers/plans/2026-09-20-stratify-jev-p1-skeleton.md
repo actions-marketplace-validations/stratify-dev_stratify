@@ -1473,11 +1473,20 @@ mod tests {
     }
 
     fn judgment(v: Verdict) -> Judgment {
+        // Non-empty answers on purpose: these raw probabilities are the
+        // product's auditability guarantee, so a test that always passes
+        // an empty map never exercises the field that carries them.
+        let mut answers = serde_json::Map::new();
+        answers.insert("framework_invoked".into(), serde_json::json!(0.91));
+        answers.insert(
+            "explanation".into(),
+            serde_json::json!({ "choice": "framework_invoked", "confidence": 0.88 }),
+        );
         Judgment {
             judge: "dead_code".into(),
             verdict: v,
             reason: "reached by a framework".into(),
-            answers: serde_json::Map::new(),
+            answers,
             model: "jev-1.13.0".into(),
         }
     }
@@ -1531,6 +1540,32 @@ mod tests {
         assert_eq!(f.extra["judgment"]["original"]["confidence"], "certain");
         assert_eq!(f.extra["judgment"]["reason"], "reached by a framework");
         assert_eq!(f.extra["judgment"]["model"], "jev-1.13.0");
+    }
+
+    #[test]
+    fn every_raw_probability_reaches_the_finding() {
+        let mut f = finding(Severity::Info, Confidence::Likely);
+        apply(&mut f, &judgment(Verdict::Dismiss), Severity::Warning);
+        let answers = &f.extra["judgment"]["answers"];
+        assert_eq!(answers["framework_invoked"], 0.91);
+        assert_eq!(answers["explanation"]["choice"], "framework_invoked");
+    }
+
+    #[test]
+    fn step_down_walks_every_severity_tier() {
+        // Weaken's behavior rests entirely on this, and the Warning tier is
+        // the common case: duplication findings are reported at Warning.
+        assert_eq!(Severity::Error.step_down(), Severity::Warning);
+        assert_eq!(Severity::Warning.step_down(), Severity::Info);
+        assert_eq!(Severity::Info.step_down(), Severity::Info);
+    }
+
+    #[test]
+    fn weaken_moves_a_warning_finding_to_info() {
+        let mut f = finding(Severity::Warning, Confidence::Certain);
+        apply(&mut f, &judgment(Verdict::Weaken), Severity::Warning);
+        assert_eq!(f.severity, Severity::Info);
+        assert_eq!(f.confidence, Confidence::Likely);
     }
 }
 ```
@@ -1708,6 +1743,9 @@ mod tests {
     fn key_changes_when_any_input_changes() {
         let s = json!({ "name": "helper" });
         let base = cache_key("dead_code", 1, "jev-latest", &s, &questions());
+        // A different judge must never collide with this one. Two judges
+        // sharing a key would serve one judge's verdict to the other.
+        assert_ne!(base, cache_key("duplication", 1, "jev-latest", &s, &questions()));
         assert_ne!(base, cache_key("dead_code", 2, "jev-latest", &s, &questions()));
         assert_ne!(base, cache_key("dead_code", 1, "jev-1.13.0", &s, &questions()));
         assert_ne!(
@@ -1796,16 +1834,26 @@ pub fn cache_key(
     questions: &BTreeMap<String, Question>,
 ) -> String {
     let mut h = Sha256::new();
-    h.update(judge.as_bytes());
-    h.update([0]);
-    h.update(version.to_le_bytes());
-    h.update([0]);
-    h.update(model.as_bytes());
-    h.update([0]);
-    h.update(serde_json::to_vec(state).unwrap_or_default());
-    h.update([0]);
-    h.update(serde_json::to_vec(questions).unwrap_or_default());
+    feed(&mut h, judge.as_bytes());
+    h.update(version.to_le_bytes()); // fixed width, needs no framing
+    feed(&mut h, model.as_bytes());
+    feed(&mut h, &serde_json::to_vec(state).unwrap_or_default());
+    feed(&mut h, &serde_json::to_vec(questions).unwrap_or_default());
     format!("{:x}", h.finalize())
+}
+
+/// Hash one variable-length field prefixed by its length, so field
+/// boundaries are unambiguous and no two different inputs can produce the
+/// same byte stream. A single-byte delimiter would be weaker: a field
+/// whose content includes that byte could realign the stream. `model`
+/// comes from user TOML and is not under this code's control.
+///
+/// This costs nothing now and cannot be changed cheaply later: the cache
+/// is meant to be committed to git, so altering the hash input format
+/// invalidates every entry anyone has already committed.
+fn feed(h: &mut Sha256, bytes: &[u8]) {
+    h.update((bytes.len() as u64).to_le_bytes());
+    h.update(bytes);
 }
 
 pub struct Cache {
