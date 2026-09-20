@@ -244,8 +244,8 @@ batch_findings = 10
 batch_files = 25
 
 [jev.thresholds.dead_code]
-dismiss_at = 0.75       # framework_invoked or test_only above this -> Dismiss
-api_at = 0.75           # external_api above this -> Weaken
+dismiss_at = 0.75       # framework_invoked or test_only at or above this -> Dismiss
+api_at = 0.75           # external_api at or above -> Weaken (Dismiss at the Info floor)
 low_at = 0.25           # all three Nouls below this is a precondition for Strengthen
 explanation_at = 0.70   # Choice confidence floor for genuinely_unused -> Strengthen
 
