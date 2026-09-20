@@ -280,13 +280,14 @@ EOF
 - Create: `tests/fixtures/sample-repo/stratify.toml`
 - Create: `tests/fixtures/sample-repo/src/lib.rs`
 - Create: `tests/fixtures/sample-repo/vendor/skipme.rs`
+- Create: `tests/fixtures/sample-repo/src/unicode.rs`
 - Modify: `crates/stratify-jev-judge/src/lib.rs`
 - Modify: `crates/stratify-jev-judge/Cargo.toml`
 - Test: inline `#[cfg(test)] mod tests` in `context.rs`
 
 **Interfaces:**
 - Consumes: `model::Span` from Task 1.
-- Produces: `RepoContext::new(root: PathBuf) -> io::Result<RepoContext>`, `RepoContext::function_source(&self, span: &Span) -> Option<String>` (span expanded to whole lines), `RepoContext::file_text(&self, rel: &str) -> Option<String>`, `RepoContext::files(&self) -> &[FileEntry]`, `RepoContext::root(&self) -> &Path`, `FileEntry { pub rel: String, pub language: Option<&'static str> }`, and `language_of(path: &str) -> Option<&'static str>`.
+- Produces: `RepoContext::new(root: PathBuf) -> io::Result<RepoContext>` (errors with `NotFound` when `root` is not a directory, so the CLI can report a bad `--root` rather than silently scanning nothing), `RepoContext::function_source(&self, span: &Span) -> Option<String>` (span expanded to whole lines), `RepoContext::file_text(&self, rel: &str) -> Option<String>`, `RepoContext::files(&self) -> &[FileEntry]`, `RepoContext::root(&self) -> &Path`, `FileEntry { pub rel: String, pub language: Option<&'static str> }`, and `language_of(path: &str) -> Option<&'static str>`.
 
 - [ ] **Step 1: Add dependencies**
 
@@ -330,6 +331,17 @@ fn orphan() -> u32 {
 
 ```rust
 fn vendored() {}
+```
+
+`tests/fixtures/sample-repo/src/unicode.rs`. Multi-byte characters are the
+point of this file: engine spans are raw byte offsets, and a stale report or a
+file edited since the scan can land one mid-character.
+
+```rust
+/// Greets in héllo wörld form, with multi-byte characters in the doc comment.
+pub fn greet() -> &'static str {
+    "héllo"
+}
 ```
 
 - [ ] **Step 3: Write the failing test**
@@ -390,6 +402,42 @@ mod tests {
     }
 
     #[test]
+    fn a_span_landing_mid_character_does_not_panic() {
+        let ctx = fixture();
+        let text = ctx.file_text("src/unicode.rs").unwrap();
+        // 'h' is one byte, then 'é' occupies the next two, so find + 2
+        // lands strictly inside 'é' and is not a char boundary.
+        let inside = text.find("héllo").unwrap() + 2;
+        assert!(!text.is_char_boundary(inside), "fixture must be multi-byte here");
+        let span = Span {
+            file: "src/unicode.rs".into(),
+            start_byte: inside,
+            end_byte: inside + 1,
+            start_line: 1,
+        };
+        let src = ctx.function_source(&span).expect("returns a line, never panics");
+        assert!(src.contains("héllo"), "got {src:?}");
+    }
+
+    #[test]
+    fn a_single_star_glob_does_not_cross_a_directory_separator() {
+        // The engine compiles globs with literal_separator(true). Diverging
+        // here means the two tools disagree about which files are in scope.
+        let shallow = compile_ignore_globs(&["vendor/*.rs".to_string()]);
+        assert!(shallow.is_match("vendor/skipme.rs"));
+        assert!(!shallow.is_match("vendor/sub/skipme.rs"));
+
+        let deep = compile_ignore_globs(&["vendor/**".to_string()]);
+        assert!(deep.is_match("vendor/sub/skipme.rs"));
+    }
+
+    #[test]
+    fn a_missing_root_is_an_error_not_an_empty_inventory() {
+        let err = RepoContext::new(PathBuf::from("/definitely/not/a/real/path")).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    #[test]
     fn language_is_derived_from_the_extension() {
         assert_eq!(language_of("a/b.rs"), Some("rust"));
         assert_eq!(language_of("a/b.tsx"), Some("typescript"));
@@ -409,7 +457,7 @@ Prepend to `crates/stratify-jev-judge/src/context.rs`:
 
 ```rust
 use crate::model::Span;
-use globset::{Glob, GlobSet, GlobSetBuilder};
+use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use ignore::WalkBuilder;
 use serde::Deserialize;
 use std::cell::RefCell;
@@ -460,6 +508,12 @@ pub struct RepoContext {
 
 impl RepoContext {
     pub fn new(root: PathBuf) -> io::Result<Self> {
+        if !root.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("not a directory: {}", root.display()),
+            ));
+        }
         let globs = load_ignore_globs(&root);
         let mut files = Vec::new();
         for entry in WalkBuilder::new(&root).build() {
@@ -509,30 +563,46 @@ impl RepoContext {
     }
 
     /// The span's byte range widened to whole lines, which is what a model
-    /// needs to read a function. Byte offsets that do not land on a char
-    /// boundary are clamped outward to the nearest one.
+    /// needs to read a function.
+    ///
+    /// The span's OWN offsets are snapped to char boundaries before any
+    /// slicing. They arrive as raw byte offsets from an engine report, so a
+    /// stale report, a newer engine, or a file edited since the scan can put
+    /// one mid-character, and slicing there panics. Snapping the line
+    /// bounds afterward would protect nothing: they come from searching for
+    /// '\n', which is ASCII and therefore always already on a boundary.
     pub fn function_source(&self, span: &Span) -> Option<String> {
         let text = self.file_text(&span.file)?;
         if text.is_empty() {
             return None;
         }
-        let start = span.start_byte.min(text.len());
-        let end = span.end_byte.clamp(start, text.len());
+        let start = floor_boundary(&text, span.start_byte.min(text.len()));
+        let end = ceil_boundary(&text, span.end_byte.clamp(start, text.len()));
         let line_start = text[..start].rfind('\n').map(|i| i + 1).unwrap_or(0);
         let line_end = text[end..]
             .find('\n')
             .map(|i| end + i)
             .unwrap_or_else(|| text.len());
-        let mut lo = line_start;
-        while lo < text.len() && !text.is_char_boundary(lo) {
-            lo += 1;
-        }
-        let mut hi = line_end;
-        while hi < text.len() && !text.is_char_boundary(hi) {
-            hi += 1;
-        }
-        text.get(lo..hi).map(|s| s.to_string())
+        Some(text[line_start..line_end].to_string())
     }
+}
+
+/// Largest char boundary at or below `i`. Index 0 is always a boundary, so
+/// this terminates.
+fn floor_boundary(text: &str, mut i: usize) -> usize {
+    while i > 0 && !text.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+/// Smallest char boundary at or above `i`. `text.len()` is always a
+/// boundary, so this terminates.
+fn ceil_boundary(text: &str, mut i: usize) -> usize {
+    while i < text.len() && !text.is_char_boundary(i) {
+        i += 1;
+    }
+    i
 }
 
 /// Read `[ignore] paths` from `stratify.toml` at the root. Absent or
@@ -542,9 +612,19 @@ fn load_ignore_globs(root: &Path) -> GlobSet {
         return GlobSet::empty();
     };
     let cfg: IgnoreToml = toml::from_str(&text).unwrap_or_default();
+    compile_ignore_globs(&cfg.ignore.paths)
+}
+
+/// Compile ignore globs exactly as the engine does, in
+/// `stratify-analysis/src/ignore.rs`: `literal_separator(true)` so `*` does
+/// not cross `/` while `**` does. Plain `Glob::new` leaves that flag false,
+/// which would make `build/*.log` match `build/sub/a.log` here but not in
+/// the engine, and the two tools would silently disagree about scope.
+/// Bad patterns are skipped, matching the engine again.
+fn compile_ignore_globs(paths: &[String]) -> GlobSet {
     let mut b = GlobSetBuilder::new();
-    for p in &cfg.ignore.paths {
-        if let Ok(g) = Glob::new(p) {
+    for p in paths {
+        if let Ok(g) = GlobBuilder::new(p).literal_separator(true).build() {
             b.add(g);
         }
     }
