@@ -84,7 +84,7 @@ mkdir -p ~/dev/stratify-jev/crates/stratify-jev-judge/src
 cd ~/dev/stratify-jev
 git init
 printf 'target\n' > .gitignore
-printf '[toolchain]\nchannel = "1.75"\n' > rust-toolchain.toml
+printf '[toolchain]\nchannel = "stable"\n' > rust-toolchain.toml
 ```
 
 `Cargo.toml`:
