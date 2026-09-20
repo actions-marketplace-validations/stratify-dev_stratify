@@ -438,6 +438,62 @@ mod tests {
     }
 
     #[test]
+    fn occurrences_finds_whole_word_uses_and_skips_substrings() {
+        let ctx = fixture();
+        // `helper` is declared once in src/lib.rs and called once from `used`.
+        let hits = ctx.occurrences("helper");
+        assert!(hits.len() >= 2, "got {hits:?}");
+        assert!(hits.iter().all(|o| o.file == "src/lib.rs"));
+        assert!(hits.iter().any(|o| o.text.contains("helper() + 1")));
+        // A substring of a longer identifier is not an occurrence.
+        assert!(ctx.occurrences("help").is_empty());
+        assert!(ctx.occurrences("").is_empty());
+    }
+
+    #[test]
+    fn occurrences_are_empty_for_an_unknown_name() {
+        assert!(fixture().occurrences("no_such_identifier_anywhere").is_empty());
+    }
+
+    #[test]
+    fn in_test_context_is_false_for_ordinary_production_code() {
+        let ctx = fixture();
+        let line = ctx
+            .file_text("src/lib.rs")
+            .unwrap()
+            .lines()
+            .position(|l| l.contains("fn helper"))
+            .unwrap()
+            + 1;
+        assert!(!ctx.in_test_context("src/lib.rs", line));
+    }
+
+    #[test]
+    fn in_test_context_is_true_inside_a_cfg_test_module() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("src/a.rs"),
+            "pub fn prod() -> u32 {\n    1\n}\n\n#[cfg(test)]\nmod tests {\n    fn helper() {}\n}\n\npub fn after() {}\n",
+        )
+        .unwrap();
+        let ctx = RepoContext::new(dir.path().to_path_buf()).unwrap();
+        // `fn helper` sits on line 7, inside the test module.
+        assert!(ctx.in_test_context("src/a.rs", 7));
+        // `fn prod` on line 1 and `fn after` on line 10 do not.
+        assert!(!ctx.in_test_context("src/a.rs", 1));
+        assert!(!ctx.in_test_context("src/a.rs", 10));
+    }
+
+    #[test]
+    fn a_path_under_tests_counts_as_test_context_on_its_own() {
+        let ctx = fixture();
+        assert!(ctx.in_test_context("tests/whatever.rs", 1));
+        assert!(ctx.in_test_context("src/thing_test.rs", 1));
+        assert!(!ctx.in_test_context("src/lib.rs", 1));
+    }
+
+    #[test]
     fn language_is_derived_from_the_extension() {
         assert_eq!(language_of("a/b.rs"), Some("rust"));
         assert_eq!(language_of("a/b.tsx"), Some("typescript"));
@@ -504,6 +560,9 @@ pub struct RepoContext {
     root: PathBuf,
     files: Vec<FileEntry>,
     cache: RefCell<HashMap<String, Option<String>>>,
+    /// Identifier -> (file index, 1-based line). Built lazily on first
+    /// `occurrences` call, then reused for the whole run.
+    index: RefCell<Option<HashMap<String, Vec<(usize, usize)>>>>,
 }
 
 impl RepoContext {
@@ -541,11 +600,105 @@ impl RepoContext {
             root,
             files,
             cache: RefCell::new(HashMap::new()),
+            index: RefCell::new(None),
         })
     }
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Every whole-word occurrence of `name` across the file inventory.
+    ///
+    /// The index is built once on first call and reused for the rest of the
+    /// run, so this stays one pass over the repo no matter how many findings
+    /// ask. Without it, judging N findings against M files would be N times M
+    /// scans.
+    ///
+    /// Name collisions make the result a hint, not a proof, which is the
+    /// right strength for a model input. Present it as a count with sample
+    /// lines, never as a claim that a call exists.
+    pub fn occurrences(&self, name: &str) -> Vec<Occurrence> {
+        if name.is_empty() {
+            return Vec::new();
+        }
+        self.build_index();
+        let index = self.index.borrow();
+        let Some(hits) = index.as_ref().and_then(|m| m.get(name)) else {
+            return Vec::new();
+        };
+        hits.iter()
+            .filter_map(|(file_idx, line)| {
+                let rel = &self.files.get(*file_idx)?.rel;
+                let text = self.file_text(rel)?;
+                let content = text.lines().nth(line - 1)?.trim().to_string();
+                Some(Occurrence {
+                    file: rel.clone(),
+                    line: *line,
+                    text: content,
+                })
+            })
+            .collect()
+    }
+
+    fn build_index(&self) {
+        if self.index.borrow().is_some() {
+            return;
+        }
+        let mut map: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
+        for (file_idx, entry) in self.files.iter().enumerate() {
+            let Some(text) = self.file_text(&entry.rel) else {
+                continue;
+            };
+            for (i, line) in text.lines().enumerate() {
+                for_each_identifier(line, |ident| {
+                    map.entry(ident.to_string())
+                        .or_default()
+                        .push((file_idx, i + 1));
+                });
+            }
+        }
+        *self.index.borrow_mut() = Some(map);
+    }
+
+    /// Whether `line` in `file` sits inside test code.
+    ///
+    /// A deliberate heuristic, and the single decisive fact for the
+    /// `#[cfg(test)]` helper shape: that attribute sits on the enclosing
+    /// module, not on the function, so nothing about the function itself
+    /// reveals it. Brace counting ignores braces inside strings and
+    /// comments, which is acceptable for a model hint and would not be for
+    /// a parser.
+    pub fn in_test_context(&self, file: &str, line: usize) -> bool {
+        if path_is_tests(file) {
+            return true;
+        }
+        let Some(text) = self.file_text(file) else {
+            return false;
+        };
+        let mut depth: i32 = 0;
+        let mut test_depth: Option<i32> = None;
+        for (i, l) in text.lines().enumerate() {
+            if i + 1 > line {
+                break;
+            }
+            if test_depth.is_none() && opens_test_block(l) {
+                test_depth = Some(depth);
+            }
+            for ch in l.chars() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if test_depth.is_some_and(|d| depth <= d) {
+                            test_depth = None;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        test_depth.is_some()
     }
 
     pub fn files(&self) -> &[FileEntry] {
@@ -585,6 +738,61 @@ impl RepoContext {
             .unwrap_or_else(|| text.len());
         Some(text[line_start..line_end].to_string())
     }
+}
+
+/// One place a name appears in the repository, outside its own declaration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Occurrence {
+    pub file: String,
+    pub line: usize,
+    pub text: String,
+}
+
+/// Call `f` with every identifier-like run in `line`. Bytes outside
+/// `[A-Za-z0-9_]` end a run, so a multi-byte character splits identifiers
+/// rather than joining them. Every slice boundary is an ASCII byte, so this
+/// cannot panic on non-ASCII source.
+fn for_each_identifier(line: &str, mut f: impl FnMut(&str)) {
+    let bytes = line.as_bytes();
+    let mut start: Option<usize> = None;
+    for (i, &b) in bytes.iter().enumerate() {
+        let is_ident = b.is_ascii_alphanumeric() || b == b'_';
+        match (is_ident, start) {
+            (true, None) => start = Some(i),
+            (false, Some(st)) => {
+                f(&line[st..i]);
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(st) = start {
+        f(&line[st..]);
+    }
+}
+
+/// True when the path alone says the file holds tests.
+fn path_is_tests(rel: &str) -> bool {
+    let stem = rel.rsplit('/').next().unwrap_or(rel);
+    rel.starts_with("tests/")
+        || rel.contains("/tests/")
+        || rel.contains("/__tests__/")
+        || stem.starts_with("test_")
+        || stem.contains("_test.")
+        || stem.contains(".test.")
+        || stem.contains("_spec.")
+        || stem.contains(".spec.")
+}
+
+/// True when the line opens a block whose contents are tests.
+fn opens_test_block(line: &str) -> bool {
+    let t = line.trim_start();
+    t.starts_with("#[cfg(test)]")
+        || t.starts_with("mod tests")
+        || t.starts_with("pub mod tests")
+        || t.starts_with("describe(")
+        || t.starts_with("class Test")
+        || (t.starts_with("class ") && t.contains("Test") && t.ends_with(':'))
 }
 
 /// Largest char boundary at or below `i`. Index 0 is always a boundary, so
@@ -2043,6 +2251,7 @@ fn d_dismiss_at() -> f64 { 0.75 }
 fn d_api_at() -> f64 { 0.75 }
 fn d_low_at() -> f64 { 0.25 }
 fn d_explanation_at() -> f64 { 0.70 }
+fn d_resolver_at() -> f64 { 0.70 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct DeadCodeThresholds {
@@ -2059,6 +2268,11 @@ pub struct DeadCodeThresholds {
     /// Choice confidence floor for genuinely_unused to give Strengthen.
     #[serde(default = "d_explanation_at")]
     pub explanation_at: f64,
+    /// resolver_missed_a_call at or above this gives Dismiss. An absent
+    /// answer is treated as 1.0, so a cache entry predating the question
+    /// never reads as "no resolver failure".
+    #[serde(default = "d_resolver_at")]
+    pub resolver_at: f64,
 }
 
 impl Default for DeadCodeThresholds {
@@ -2068,6 +2282,7 @@ impl Default for DeadCodeThresholds {
             api_at: d_api_at(),
             low_at: d_low_at(),
             explanation_at: d_explanation_at(),
+            resolver_at: d_resolver_at(),
         }
     }
 }
@@ -2168,6 +2383,7 @@ EOF
 - Create: `crates/stratify-jev-judge/src/judges/mod.rs`
 - Create: `crates/stratify-jev-judge/src/judges/dead_code.rs`
 - Create: `tests/fixtures/sample-repo/src/app.py`
+- Modify: `crates/stratify-jev-judge/src/context.rs` (occurrence index and test-context detection)
 - Modify: `crates/stratify-jev-judge/src/lib.rs`
 - Test: inline `#[cfg(test)] mod tests` in `dead_code.rs`
 
@@ -2260,11 +2476,19 @@ mod tests {
         }
     }
 
-    fn answers(fw: f64, test: f64, api: f64, pick: &str, conf: f64) -> BTreeMap<String, Answer> {
+    fn answers(
+        fw: f64,
+        test: f64,
+        api: f64,
+        resolver: f64,
+        pick: &str,
+        conf: f64,
+    ) -> BTreeMap<String, Answer> {
         [
             ("framework_invoked".to_string(), noul(fw)),
             ("test_only".to_string(), noul(test)),
             ("external_api".to_string(), noul(api)),
+            ("resolver_missed_a_call".to_string(), noul(resolver)),
             ("explanation".to_string(), choice(pick, conf)),
         ]
         .into_iter()
@@ -2276,6 +2500,22 @@ mod tests {
         assert_eq!(function_name("unused function `neverCalled`"), Some("neverCalled"));
         assert_eq!(function_name("possibly unused function `helper`"), Some("helper"));
         assert_eq!(function_name("no backticks here"), None);
+    }
+
+    #[test]
+    fn state_carries_the_occurrence_evidence() {
+        let s = DeadCodeJudge.state_for(&finding(), &ctx());
+        // `helper` is called once from `used`, so the state must show a
+        // caller even though the call graph did not connect it.
+        assert!(s["occurrences"]["in_this_file"].as_u64().unwrap() >= 1);
+        assert!(s["occurrences"]["repo_wide"].as_u64().unwrap() >= 1);
+        let samples = s["occurrences"]["sample_sites"].as_array().unwrap();
+        assert!(
+            samples.iter().any(|v| v.as_str().unwrap().contains("helper() + 1")),
+            "got {samples:?}"
+        );
+        assert_eq!(s["in_test_context"], false);
+        assert_eq!(s["engine_confidence"], "likely");
     }
 
     #[test]
@@ -2330,23 +2570,32 @@ mod tests {
     }
 
     #[test]
-    fn asks_four_questions_with_canonical_names() {
+    fn asks_five_questions_with_canonical_names() {
         let q = DeadCodeJudge.questions();
         let mut names: Vec<&str> = q.keys().map(|s| s.as_str()).collect();
         names.sort();
-        assert_eq!(names, ["explanation", "external_api", "framework_invoked", "test_only"]);
+        assert_eq!(
+            names,
+            [
+                "explanation",
+                "external_api",
+                "framework_invoked",
+                "resolver_missed_a_call",
+                "test_only",
+            ]
+        );
     }
 
     #[test]
     fn a_confident_framework_hit_dismisses() {
-        let j = DeadCodeJudge.judge(&finding(), &answers(0.91, 0.02, 0.1, "framework_invoked", 0.9), &DeadCodeThresholds::default());
+        let j = DeadCodeJudge.judge(&finding(), &answers(0.91, 0.02, 0.1, 0.05, "framework_invoked", 0.9), &DeadCodeThresholds::default());
         assert_eq!(j.verdict, Verdict::Dismiss);
         assert!(j.reason.contains("framework"), "got {}", j.reason);
     }
 
     #[test]
     fn a_confident_test_helper_dismisses() {
-        let j = DeadCodeJudge.judge(&finding(), &answers(0.05, 0.88, 0.1, "test_support", 0.9), &DeadCodeThresholds::default());
+        let j = DeadCodeJudge.judge(&finding(), &answers(0.05, 0.88, 0.1, 0.05, "test_support", 0.9), &DeadCodeThresholds::default());
         assert_eq!(j.verdict, Verdict::Dismiss);
         assert!(j.reason.contains("test"), "got {}", j.reason);
     }
@@ -2357,7 +2606,7 @@ mod tests {
         // covered by a_finding_the_engine_hedged_on_is_never_strengthened.
         let j = DeadCodeJudge.judge(
             &certain_finding(),
-            &answers(0.04, 0.03, 0.05, "genuinely_unused", 0.85),
+            &answers(0.04, 0.03, 0.05, 0.02, "genuinely_unused", 0.85),
             &DeadCodeThresholds::default(),
         );
         assert_eq!(j.verdict, Verdict::Strengthen);
@@ -2365,7 +2614,7 @@ mod tests {
 
     #[test]
     fn low_signals_with_an_unsure_explanation_keeps() {
-        let j = DeadCodeJudge.judge(&finding(), &answers(0.04, 0.03, 0.05, "genuinely_unused", 0.4), &DeadCodeThresholds::default());
+        let j = DeadCodeJudge.judge(&finding(), &answers(0.04, 0.03, 0.05, 0.02, "genuinely_unused", 0.4), &DeadCodeThresholds::default());
         assert_eq!(j.verdict, Verdict::Keep);
     }
 
@@ -2375,7 +2624,7 @@ mod tests {
         // Some((_, conf)) makes this the only failing test in the suite.
         let j = DeadCodeJudge.judge(
             &certain_finding(),
-            &answers(0.04, 0.03, 0.05, "cannot_tell", 0.90),
+            &answers(0.04, 0.03, 0.05, 0.02, "cannot_tell", 0.90),
             &DeadCodeThresholds::default(),
         );
         assert_eq!(j.verdict, Verdict::Keep);
@@ -2388,7 +2637,7 @@ mod tests {
         // and this is the shape every cross-crate false positive takes.
         let j = DeadCodeJudge.judge(
             &finding(),
-            &answers(0.04, 0.03, 0.05, "genuinely_unused", 0.85),
+            &answers(0.04, 0.03, 0.05, 0.02, "genuinely_unused", 0.85),
             &DeadCodeThresholds::default(),
         );
         assert_eq!(j.verdict, Verdict::Keep);
@@ -2399,7 +2648,7 @@ mod tests {
     fn a_confident_entrypoint_is_dismissed() {
         let j = DeadCodeJudge.judge(
             &certain_finding(),
-            &answers(0.04, 0.03, 0.05, "entrypoint", 0.90),
+            &answers(0.04, 0.03, 0.05, 0.02, "entrypoint", 0.90),
             &DeadCodeThresholds::default(),
         );
         assert_eq!(j.verdict, Verdict::Dismiss);
@@ -2408,7 +2657,7 @@ mod tests {
     #[test]
     fn public_api_dismisses_at_the_info_floor_and_weakens_above_it() {
         let cfg = DeadCodeThresholds::default();
-        let a = answers(0.05, 0.05, 0.9, "public_api", 0.9);
+        let a = answers(0.05, 0.05, 0.9, 0.05, "public_api", 0.9);
         // Already at Info: Weaken would write back identical values, so the
         // only lever with an observable effect is Dismiss.
         assert_eq!(DeadCodeJudge.judge(&finding(), &a, &cfg).verdict, Verdict::Dismiss);
@@ -2423,9 +2672,9 @@ mod tests {
     fn thresholds_are_inclusive_at_the_boundary() {
         // Pins >= against >. Nothing else in the suite distinguishes them.
         let cfg = DeadCodeThresholds::default();
-        let at = answers(cfg.dismiss_at, 0.0, 0.0, "cannot_tell", 0.0);
+        let at = answers(cfg.dismiss_at, 0.0, 0.0, 0.0, "cannot_tell", 0.0);
         assert_eq!(DeadCodeJudge.judge(&finding(), &at, &cfg).verdict, Verdict::Dismiss);
-        let just_below = answers(cfg.dismiss_at - 0.001, 0.0, 0.0, "cannot_tell", 0.0);
+        let just_below = answers(cfg.dismiss_at - 0.001, 0.0, 0.0, 0.0, "cannot_tell", 0.0);
         assert_ne!(
             DeadCodeJudge.judge(&finding(), &just_below, &cfg).verdict,
             Verdict::Dismiss
@@ -2433,8 +2682,33 @@ mod tests {
     }
 
     #[test]
+    fn a_resolver_hit_dismisses_even_with_every_other_signal_low() {
+        // The cross-crate shape: nothing special about the function, but the
+        // name appears at a real call site the engine could not connect.
+        let j = DeadCodeJudge.judge(
+            &certain_finding(),
+            &answers(0.04, 0.03, 0.05, 0.92, "resolver_limitation", 0.9),
+            &DeadCodeThresholds::default(),
+        );
+        assert_eq!(j.verdict, Verdict::Dismiss);
+        assert!(j.reason.contains("could not resolve"), "got {}", j.reason);
+    }
+
+    #[test]
+    fn an_absent_resolver_answer_neither_dismisses_nor_strengthens() {
+        // A cached answer predating this question carries no resolver
+        // evidence. Treating absence as low would arm Strengthen on exactly
+        // the population the question exists to protect; treating it as high
+        // would dismiss everything.
+        let mut a = answers(0.04, 0.03, 0.05, 0.02, "genuinely_unused", 0.85);
+        a.remove("resolver_missed_a_call");
+        let j = DeadCodeJudge.judge(&certain_finding(), &a, &DeadCodeThresholds::default());
+        assert_eq!(j.verdict, Verdict::Keep);
+    }
+
+    #[test]
     fn a_middling_answer_keeps() {
-        let j = DeadCodeJudge.judge(&finding(), &answers(0.5, 0.4, 0.3, "cannot_tell", 0.4), &DeadCodeThresholds::default());
+        let j = DeadCodeJudge.judge(&finding(), &answers(0.5, 0.4, 0.3, 0.3, "cannot_tell", 0.4), &DeadCodeThresholds::default());
         assert_eq!(j.verdict, Verdict::Keep);
     }
 
@@ -2446,7 +2720,7 @@ mod tests {
 
     #[test]
     fn every_raw_probability_is_recorded_on_the_judgment() {
-        let j = DeadCodeJudge.judge(&finding(), &answers(0.91, 0.02, 0.1, "framework_invoked", 0.9), &DeadCodeThresholds::default());
+        let j = DeadCodeJudge.judge(&finding(), &answers(0.91, 0.02, 0.1, 0.05, "framework_invoked", 0.9), &DeadCodeThresholds::default());
         assert_eq!(j.answers["framework_invoked"], 0.91);
         assert_eq!(j.answers["explanation"]["choice"], "framework_invoked");
     }
@@ -2585,6 +2859,39 @@ fn imports_of(ctx: &RepoContext, file: &str) -> Vec<String> {
         .collect()
 }
 
+/// Where else this function's name appears, excluding its own declaration
+/// line. Split in-file from repo-wide because they answer different
+/// questions: in-file occurrences catch a private helper whose only caller
+/// was itself unreachable, repo-wide ones catch a call the engine could not
+/// resolve across a crate boundary.
+///
+/// Sample lines are capped so a common name cannot blow past the state
+/// budget. Name collisions make this a hint, never a proof, and the
+/// question wording says so.
+fn occurrence_summary(
+    ctx: &RepoContext,
+    decl: &crate::model::Span,
+    name: &str,
+) -> serde_json::Value {
+    const MAX_SAMPLES: usize = 8;
+    let all = ctx.occurrences(name);
+    let elsewhere: Vec<_> = all
+        .into_iter()
+        .filter(|o| !(o.file == decl.file && o.line == decl.start_line))
+        .collect();
+    let in_file = elsewhere.iter().filter(|o| o.file == decl.file).count();
+    let samples: Vec<String> = elsewhere
+        .iter()
+        .take(MAX_SAMPLES)
+        .map(|o| format!("{}:{}: {}", o.file, o.line, o.text))
+        .collect();
+    serde_json::json!({
+        "in_this_file": in_file,
+        "repo_wide": elsewhere.len(),
+        "sample_sites": samples,
+    })
+}
+
 /// Repo-level signals that change what "unreachable" means.
 fn project_markers(ctx: &RepoContext) -> Vec<String> {
     let mut out = Vec::new();
@@ -2592,6 +2899,19 @@ fn project_markers(ctx: &RepoContext) -> Vec<String> {
     if let Ok(t) = std::fs::read_to_string(root.join("Cargo.toml")) {
         if t.contains("publish = false") {
             out.push("Cargo.toml declares publish = false".into());
+        }
+        // `publish = false` almost never appears in a workspace, because
+        // unpublished members simply omit the key. Without this marker the
+        // external_api question points at an empty array on exactly the
+        // repos where it matters most, and a `pub` item crossing a crate
+        // boundary inside the repo looks like a public API.
+        if t.contains("[workspace]") {
+            let members = t.matches("crates/").count().max(1);
+            out.push(format!(
+                "Cargo workspace with roughly {members} member crates: `pub` items \
+                 are called across crates inside this repository, not only by \
+                 outside consumers"
+            ));
         }
     }
     if let Ok(t) = std::fs::read_to_string(root.join("package.json")) {
@@ -2626,6 +2946,9 @@ impl DeadCodeJudge {
         let fw = answers.get("framework_invoked").and_then(Answer::as_noul);
         let test = answers.get("test_only").and_then(Answer::as_noul);
         let api = answers.get("external_api").and_then(Answer::as_noul);
+        let resolver = answers
+            .get("resolver_missed_a_call")
+            .and_then(Answer::as_noul);
         let explanation = answers.get("explanation").and_then(Answer::as_choice);
 
         let mut raw = serde_json::Map::new();
@@ -2638,6 +2961,9 @@ impl DeadCodeJudge {
         if let Some(v) = api {
             raw.insert("external_api".into(), serde_json::json!(v));
         }
+        if let Some(v) = resolver {
+            raw.insert("resolver_missed_a_call".into(), serde_json::json!(v));
+        }
         if let Some((pick, conf)) = explanation {
             raw.insert(
                 "explanation".into(),
@@ -2649,6 +2975,7 @@ impl DeadCodeJudge {
             fw,
             test,
             api,
+            resolver,
             explanation,
             (finding.severity, finding.confidence),
             cfg,
@@ -2675,6 +3002,7 @@ fn decide(
     fw: Option<f64>,
     test: Option<f64>,
     api: Option<f64>,
+    resolver: Option<f64>,
     explanation: Option<(&str, f64)>,
     engine: (Severity, Confidence),
     cfg: &DeadCodeThresholds,
@@ -2683,6 +3011,18 @@ fn decide(
     let (Some(fw), Some(test), Some(api)) = (fw, test, api) else {
         return (Verdict::Keep, "no usable answer, left as the engine found it".into());
     };
+    // An absent resolver answer is unknown, not low and not high. It must
+    // not trigger Dismiss, or a model that omits the answer would dismiss
+    // every finding. It must not permit Strengthen either, since a cache
+    // entry predating this question carries no resolver evidence at all.
+    if let Some(r) = resolver {
+        if r >= cfg.resolver_at {
+            return (
+                Verdict::Dismiss,
+                format!("a call site exists that the engine could not resolve ({r:.2})"),
+            );
+        }
+    }
 
     if fw >= cfg.dismiss_at {
         return (Verdict::Dismiss, format!("reached by a framework ({fw:.2})"));
@@ -2716,7 +3056,19 @@ fn decide(
             )
         };
     }
-    if fw < cfg.low_at && test < cfg.low_at && api < cfg.low_at {
+    if let Some(("resolver_limitation", conf)) = explanation {
+        if conf >= cfg.explanation_at {
+            return (
+                Verdict::Dismiss,
+                format!("the analyzer missed a real call rather than finding dead code ({conf:.2})"),
+            );
+        }
+    }
+    if fw < cfg.low_at
+        && test < cfg.low_at
+        && api < cfg.low_at
+        && resolver.is_some_and(|r| r < cfg.low_at)
+    {
         if let Some(("genuinely_unused", conf)) = explanation {
             if conf >= cfg.explanation_at {
                 // The guard that holds even when every question fails.
@@ -2751,7 +3103,11 @@ impl Judge for DeadCodeJudge {
     }
 
     fn version(&self) -> u32 {
-        1
+        // 2: state gained occurrences, in_test_context and engine_confidence,
+        // and the question set gained resolver_missed_a_call. Every cached
+        // answer from version 1 was produced without that evidence, so the
+        // bump must invalidate them.
+        2
     }
 
     fn full_strength(&self) -> Severity {
@@ -2760,9 +3116,10 @@ impl Judge for DeadCodeJudge {
 
     fn state_for(&self, finding: &Finding, ctx: &RepoContext) -> serde_json::Value {
         let file = finding.span.file.as_str();
+        let name = function_name(&finding.message).unwrap_or_default();
         serde_json::json!({
             "function": {
-                "name": function_name(&finding.message).unwrap_or_default(),
+                "name": name,
                 "file": file,
                 "line": finding.span.start_line,
                 "language": language_of(file),
@@ -2778,6 +3135,14 @@ impl Judge for DeadCodeJudge {
             // not verify. That is the strongest single clue about why a
             // function looks unreachable, and it costs nothing to include.
             "engine_confidence": finding.confidence,
+            // The decisive fact for the #[cfg(test)] helper shape. That
+            // attribute sits on the enclosing module, not on the function,
+            // so nothing about the function itself reveals it.
+            "in_test_context": ctx.in_test_context(file, finding.span.start_line),
+            // Where else this name appears. Without it the state carries no
+            // caller information of any kind, so a private helper called
+            // four times inside its own file looks identical to dead code.
+            "occurrences": occurrence_summary(ctx, &finding.span, name),
         })
     }
 
@@ -2825,15 +3190,39 @@ impl Judge for DeadCodeJudge {
                 ),
             ),
             (
+                "resolver_missed_a_call".to_string(),
+                Question::noul(
+                    "The engine that produced this finding resolves calls statically and \
+                     cannot follow every one, particularly across crate, package, or module \
+                     boundaries. Given `occurrences`, which lists where this name appears \
+                     elsewhere in the repository, does a real call site exist that the \
+                     engine failed to connect to this function?",
+                    Some(NoulCriteria {
+                        yes: "The occurrence list shows the name used somewhere that reads \
+                              like a call, so a caller exists and the engine simply could \
+                              not resolve it."
+                            .into(),
+                        no: "The occurrence list shows no use that reads like a call. It is \
+                             empty, or its entries are only the declaration, an import, a \
+                             comment, or a different symbol that happens to share the name."
+                            .into(),
+                    }),
+                ),
+            ),
+            (
                 "explanation".to_string(),
                 Question::choice(
-                    "Nothing in this repository calls the function in `function`. What best \
-                     explains why?",
+                    "A static analyzer found no call to the function in `function` anywhere \
+                     in this repository. Analyzers miss calls they cannot resolve, so this \
+                     may be a limit of the analysis rather than a fact about the code. \
+                     Given `occurrences`, `in_test_context`, and `engine_confidence`, what \
+                     best explains the absence of a detected call?",
                     [
                         ("framework_invoked", "A framework, container, or registry calls it without an explicit call site."),
                         ("test_support", "It exists to support tests."),
                         ("public_api", "It is exported for consumers outside this repository."),
                         ("entrypoint", "It is a program entry point, such as a main function or a CLI command handler."),
+                        ("resolver_limitation", "A real call exists somewhere in this repository, but the analyzer could not resolve it, for example across a crate, package, or module boundary."),
                         ("genuinely_unused", "Nothing calls it and nothing is expected to. The code is dead."),
                         ("cannot_tell", "The available evidence does not settle the question."),
                     ],
