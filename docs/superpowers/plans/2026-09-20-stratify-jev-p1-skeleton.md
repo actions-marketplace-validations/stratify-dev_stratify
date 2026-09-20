@@ -1944,6 +1944,7 @@ EOF
 **Files:**
 - Create: `crates/stratify-jev-judge/src/judges/mod.rs`
 - Create: `crates/stratify-jev-judge/src/judges/dead_code.rs`
+- Create: `tests/fixtures/sample-repo/src/app.py`
 - Modify: `crates/stratify-jev-judge/src/lib.rs`
 - Test: inline `#[cfg(test)] mod tests` in `dead_code.rs`
 
@@ -1952,6 +1953,27 @@ EOF
 - Produces: `trait Judge` with `rule()`, `version()`, `full_strength()`, `state_for(&Finding, &RepoContext) -> Value`, `questions() -> BTreeMap<String, Question>`, `judge(&BTreeMap<String, Answer>, &Thresholds) -> Judgment`; and `DeadCodeJudge` implementing it. Also `fn function_name(message: &str) -> Option<&str>`.
 
 **Note for the implementer:** questions use canonical names (`framework_invoked`, `test_only`, `external_api`, `explanation`). The driver in Task 9 prefixes them per batch slot and strips the prefix before caching.
+
+- [ ] **Step 0: Create the Python fixture**
+
+`tests/fixtures/sample-repo/src/app.py`. The comments above `health` are the
+point of the file: they must be walked past, never collected.
+
+```python
+import functools
+
+
+# Registered by the router at import time.
+# This comment must not be read as an attribute.
+@app.route("/health")
+def health():
+    return "ok"
+
+
+# Nothing decorates the function below.
+def untouched():
+    return None
+```
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2034,20 +2056,43 @@ mod tests {
         );
     }
 
-    #[test]
-    fn attributes_collect_markers_and_never_comments() {
-        let ctx = ctx();
-        // src/lib.rs has `#[allow(dead_code)]` above `orphan`, and the
-        // fixture's comment lines must not be mistaken for attributes.
-        let text = ctx.file_text("src/lib.rs").unwrap();
-        let line_of_orphan = text
-            .lines()
-            .position(|l| l.contains("fn orphan"))
+    /// 1-based line number of the first line starting with `needle`.
+    fn line_of(ctx: &RepoContext, file: &str, needle: &str) -> usize {
+        ctx.file_text(file)
             .unwrap()
-            + 1;
-        let attrs = attributes_above(&ctx, "src/lib.rs", line_of_orphan);
-        assert_eq!(attrs, vec!["#[allow(dead_code)]".to_string()]);
-        assert!(attrs.iter().all(|a| !a.starts_with("//")), "got {attrs:?}");
+            .lines()
+            .position(|l| l.trim_start().starts_with(needle))
+            .expect("fixture line exists")
+            + 1
+    }
+
+    #[test]
+    fn attributes_capture_a_rust_attribute() {
+        let ctx = ctx();
+        let line = line_of(&ctx, "src/lib.rs", "fn orphan");
+        assert_eq!(
+            attributes_above(&ctx, "src/lib.rs", line),
+            vec!["#[allow(dead_code)]".to_string()]
+        );
+    }
+
+    /// The bug this guards: `#` starts a comment in Python and Ruby, so a
+    /// prefix check that accepts a bare `#` feeds every comment above a
+    /// function to the model as an "attribute", poisoning the strongest
+    /// framework signal in the state.
+    #[test]
+    fn attributes_keep_a_decorator_and_drop_python_comments() {
+        let ctx = ctx();
+        let line = line_of(&ctx, "src/app.py", "def health");
+        let attrs = attributes_above(&ctx, "src/app.py", line);
+        assert_eq!(attrs, vec!["@app.route(\"/health\")".to_string()]);
+    }
+
+    #[test]
+    fn attributes_are_empty_when_only_prose_sits_above() {
+        let ctx = ctx();
+        let line = line_of(&ctx, "src/app.py", "def untouched");
+        assert!(attributes_above(&ctx, "src/app.py", line).is_empty());
     }
 
     #[test]
