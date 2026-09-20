@@ -84,7 +84,7 @@ mkdir -p ~/dev/stratify-jev/crates/stratify-jev-judge/src
 cd ~/dev/stratify-jev
 git init
 printf 'target\n' > .gitignore
-printf '[toolchain]\nchannel = "stable"\n' > rust-toolchain.toml
+printf '[toolchain]\nchannel = "1.75"\n' > rust-toolchain.toml
 ```
 
 `Cargo.toml`:
@@ -286,7 +286,7 @@ EOF
 
 **Interfaces:**
 - Consumes: `model::Span` from Task 1.
-- Produces: `RepoContext::new(root: PathBuf) -> io::Result<RepoContext>`, `RepoContext::function_source(&self, span: &Span) -> Option<String>` (span expanded to whole lines), `RepoContext::file_text(&self, rel: &str) -> Option<String>`, `RepoContext::files(&self) -> &[FileEntry]`, `FileEntry { pub rel: String, pub language: Option<&'static str> }`, and `language_of(path: &str) -> Option<&'static str>`.
+- Produces: `RepoContext::new(root: PathBuf) -> io::Result<RepoContext>`, `RepoContext::function_source(&self, span: &Span) -> Option<String>` (span expanded to whole lines), `RepoContext::file_text(&self, rel: &str) -> Option<String>`, `RepoContext::files(&self) -> &[FileEntry]`, `RepoContext::root(&self) -> &Path`, `FileEntry { pub rel: String, pub language: Option<&'static str> }`, and `language_of(path: &str) -> Option<&'static str>`.
 
 - [ ] **Step 1: Add dependencies**
 
@@ -1476,7 +1476,7 @@ EOF
 
 **Interfaces:**
 - Consumes: `jev_client::{Answer, Question, Usage}`.
-- Produces: `cache_key(judge: &str, version: u32, model: &str, state: &Value, questions: &BTreeMap<String, Question>) -> String` (64-char lowercase hex), `Cache::new(dir: PathBuf, enabled: bool) -> Cache`, `Cache::get(&self, key: &str) -> Option<BTreeMap<String, Answer>>`, `Cache::put(&self, key: &str, judge: &str, version: u32, model: &str, answers: &BTreeMap<String, Answer>, usage: Usage) -> io::Result<()>`.
+- Produces: `cache_key(judge: &str, version: u32, model: &str, state: &Value, questions: &BTreeMap<String, Question>) -> String` (64-char lowercase hex), `Cache::new(dir: PathBuf, enabled: bool) -> Cache`, `Cache::get(&self, key: &str) -> Option<Entry>` (`Entry` carries `model` and `answers`), `Cache::put(&self, key: &str, judge: &str, version: u32, model: &str, answers: &BTreeMap<String, Answer>, usage: Usage) -> io::Result<()>`.
 
 **Note for the implementer:** the key is per finding, not per request. A request batches ten findings, but each finding gets its own key and its own cache entry holding only its own answers, stored under canonical question names with the per-batch prefix stripped. Editing one function must not invalidate the other nine.
 
@@ -1556,7 +1556,8 @@ mod tests {
             .unwrap();
 
         let got = c.get(&key).unwrap();
-        assert_eq!(got["framework_invoked"].as_noul(), Some(0.91));
+        assert_eq!(got.model, "jev-1.13.0");
+        assert_eq!(got.answers["framework_invoked"].as_noul(), Some(0.91));
     }
 
     #[test]
@@ -1649,14 +1650,15 @@ impl Cache {
     }
 
     /// A miss for any reason, including a corrupt or unreadable entry.
-    /// A bad cache file costs one request, never a crash.
-    pub fn get(&self, key: &str) -> Option<BTreeMap<String, Answer>> {
+    /// A bad cache file costs one request, never a crash. Returns the whole
+    /// entry so a cache-hit judgment records the model that actually
+    /// produced the answers, not the config default.
+    pub fn get(&self, key: &str) -> Option<Entry> {
         if !self.enabled {
             return None;
         }
         let text = std::fs::read_to_string(self.path_for(key)).ok()?;
-        let entry: Entry = serde_json::from_str(&text).ok()?;
-        Some(entry.answers)
+        serde_json::from_str(&text).ok()
     }
 
     pub fn put(
@@ -2033,6 +2035,22 @@ mod tests {
     }
 
     #[test]
+    fn attributes_collect_markers_and_never_comments() {
+        let ctx = ctx();
+        // src/lib.rs has `#[allow(dead_code)]` above `orphan`, and the
+        // fixture's comment lines must not be mistaken for attributes.
+        let text = ctx.file_text("src/lib.rs").unwrap();
+        let line_of_orphan = text
+            .lines()
+            .position(|l| l.contains("fn orphan"))
+            .unwrap()
+            + 1;
+        let attrs = attributes_above(&ctx, "src/lib.rs", line_of_orphan);
+        assert_eq!(attrs, vec!["#[allow(dead_code)]".to_string()]);
+        assert!(attrs.iter().all(|a| !a.starts_with("//")), "got {attrs:?}");
+    }
+
+    #[test]
     fn asks_four_questions_with_canonical_names() {
         let q = DeadCodeJudge.questions();
         let mut names: Vec<&str> = q.keys().map(|s| s.as_str()).collect();
@@ -2166,9 +2184,11 @@ pub fn function_name(message: &str) -> Option<&str> {
     Some(&rest[..end])
 }
 
-/// Lines immediately above the function that look like attributes,
-/// annotations, or decorators. These are the strongest framework signal
-/// in most languages.
+/// Attributes, annotations, and decorators directly above the function.
+/// These are the strongest framework signal in most languages, so only
+/// real markers are collected: a comment or a blank line is walked past,
+/// never captured. Collecting `#` comments would poison the signal in
+/// Python and Ruby, where `#` starts a comment rather than an attribute.
 fn attributes_above(ctx: &RepoContext, file: &str, start_line: usize) -> Vec<String> {
     let Some(text) = ctx.file_text(file) else {
         return Vec::new();
@@ -2178,20 +2198,14 @@ fn attributes_above(ctx: &RepoContext, file: &str, start_line: usize) -> Vec<Str
     let mut i = start_line.saturating_sub(1);
     while i > 0 {
         let line = lines.get(i - 1).map(|s| s.trim()).unwrap_or("");
-        if line.starts_with("#[")
-            || line.starts_with('@')
-            || line.starts_with("#")
-            || line.starts_with("///")
-            || line.starts_with("//")
-            || line.is_empty()
-        {
-            if !line.is_empty() && !line.starts_with("//") && !line.starts_with("///") {
-                out.push(line.to_string());
-            }
-            i -= 1;
-            continue;
+        let is_marker = line.starts_with("#[") || line.starts_with('@');
+        let is_skippable = line.is_empty() || line.starts_with("//") || line.starts_with('#');
+        if is_marker {
+            out.push(line.to_string());
+        } else if !is_skippable {
+            break;
         }
-        break;
+        i -= 1;
     }
     out.reverse();
     out
@@ -2460,7 +2474,7 @@ EOF
 
 **Interfaces:**
 - Consumes: everything from Tasks 1 through 8.
-- Produces: `Driver::new(client: Option<Client>, cache: Cache, cfg: JevConfig) -> Driver`, `async Driver::run(&self, report: &mut Report, ctx: &RepoContext) -> RunStats`, and `RunStats { judged: usize, from_cache: usize, requested: usize, failed: usize, input_tokens: u64, by_verdict: BTreeMap<Verdict, usize> }`. Also `plan_batches(items: usize, max_per_batch: usize, est_tokens: &[usize], token_ceiling: usize) -> Vec<Vec<usize>>`.
+- Produces: `Driver::new(client: Option<Client>, cache: Cache, cfg: JevConfig) -> Driver`, `async Driver::run(&self, report: &mut Report, ctx: &RepoContext) -> RunStats`, and `RunStats { judged: usize, from_cache: usize, requested: usize, failed: usize, input_tokens: u64, by_verdict: BTreeMap<String, usize> }` (keyed by the verdict's lowercase name, so it serializes without a custom map-key impl). Also `plan_batches(items: usize, max_per_batch: usize, est_tokens: &[usize], token_ceiling: usize) -> Vec<Vec<usize>>`.
 
 **Note for the implementer:** questions are namespaced per batch slot as `s{i}__{canonical}` and state per slot as `finding_{i}`. Answers are un-namespaced before caching so a cache entry is independent of the slot a finding happened to occupy.
 
@@ -2487,6 +2501,7 @@ Append to `crates/stratify-jev-judge/src/driver.rs`:
 mod tests {
     use super::*;
     use crate::model::{Confidence, Severity, Span};
+    use jev_client::RetryPolicy;
     use serde_json::json;
     use std::path::PathBuf;
     use wiremock::matchers::method;
@@ -2681,9 +2696,9 @@ use crate::cache::{cache_key, Cache};
 use crate::config::JevConfig;
 use crate::context::RepoContext;
 use crate::judges::{registry, Judge};
-use crate::model::{Finding, Report};
+use crate::model::Report;
 use crate::verdict::{apply, Judgment, Verdict};
-use jev_client::{Answer, Client, Question, RetryPolicy, SystemOneRequest};
+use jev_client::{Answer, Client, Question, SystemOneRequest};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -2800,9 +2815,16 @@ impl Driver {
             let mut misses: Vec<Prepared> = Vec::new();
             for p in prepared {
                 match self.cache.get(&p.key) {
-                    Some(answers) => {
+                    Some(entry) => {
                         stats.from_cache += 1;
-                        self.apply_one(report, p.index, &*judge, &answers, "", &mut stats);
+                        self.apply_one(
+                            report,
+                            p.index,
+                            &*judge,
+                            &entry.answers,
+                            &entry.model,
+                            &mut stats,
+                        );
                     }
                     None => misses.push(p),
                 }
@@ -2924,9 +2946,6 @@ impl Driver {
         }
     }
 }
-
-// Re-exported so tests and the CLI share one import site.
-pub use jev_client::RetryPolicy as ClientRetryPolicy;
 ```
 
 Add to `crates/stratify-jev-judge/src/lib.rs`:
@@ -2979,8 +2998,8 @@ EOF
 - Test: inline `#[cfg(test)] mod tests` in `human.rs` and `json.rs`
 
 **Interfaces:**
-- Consumes: `stratify_jev_judge::{model::{Report, Finding, Confidence, Severity}, driver::RunStats}`.
-- Produces: `human::render(report: &Report, stats: &RunStats, min: Confidence, show_dismissed: bool) -> String`, `json::render(report: &Report, tool_version: &str) -> String`, and `visible(f: &Finding, min: Confidence, show_dismissed: bool) -> bool`.
+- Consumes: `stratify_jev_judge::model::{Report, Finding, Confidence, Severity}`.
+- Produces: `human::render(report: &Report, min: Confidence, show_dismissed: bool) -> String`, `json::render(report: &Report, tool_version: &str) -> String`, and `visible(f: &Finding, min: Confidence, show_dismissed: bool) -> bool`.
 
 - [ ] **Step 1: Create the crate**
 
@@ -3041,7 +3060,6 @@ Append to `crates/stratify-jev-cli/src/output/human.rs`:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use stratify_jev_judge::driver::RunStats;
     use stratify_jev_judge::model::{Confidence, Finding, Report, Severity, Span};
 
     fn finding(conf: Confidence, judged: bool) -> Finding {
@@ -3084,21 +3102,21 @@ mod tests {
             finding(Confidence::Unknown, true),
             finding(Confidence::Likely, false),
         ]);
-        let out = render(&r, &RunStats::default(), Confidence::Likely, false);
+        let out = render(&r, Confidence::Likely, false);
         assert_eq!(out.matches("possibly unused").count(), 1, "got:\n{out}");
     }
 
     #[test]
     fn show_dismissed_brings_them_back() {
         let r = report(vec![finding(Confidence::Unknown, true)]);
-        let out = render(&r, &RunStats::default(), Confidence::Likely, true);
+        let out = render(&r, Confidence::Likely, true);
         assert!(out.contains("possibly unused"), "got:\n{out}");
     }
 
     #[test]
     fn a_judged_finding_prints_its_reason_underneath() {
         let r = report(vec![finding(Confidence::Likely, true)]);
-        let out = render(&r, &RunStats::default(), Confidence::Unknown, false);
+        let out = render(&r, Confidence::Unknown, false);
         assert!(out.contains("jev: reached by a framework (0.91)"), "got:\n{out}");
     }
 
@@ -3109,13 +3127,13 @@ mod tests {
             finding(Confidence::Unknown, true),
             finding(Confidence::Likely, false),
         ]);
-        let out = render(&r, &RunStats::default(), Confidence::Likely, false);
+        let out = render(&r, Confidence::Likely, false);
         assert!(out.contains("3 findings, 1 shown, 2 dismissed"), "got:\n{out}");
     }
 
     #[test]
     fn an_empty_report_says_so_without_a_dismissed_hint() {
-        let out = render(&report(vec![]), &RunStats::default(), Confidence::Likely, false);
+        let out = render(&report(vec![]), Confidence::Likely, false);
         assert!(out.contains("0 findings"), "got:\n{out}");
         assert!(!out.contains("--show-dismissed"), "got:\n{out}");
     }
@@ -3179,7 +3197,6 @@ Expected: FAIL, `cannot find function render in this scope`.
 Prepend to `crates/stratify-jev-cli/src/output/human.rs`:
 
 ```rust
-use stratify_jev_judge::driver::RunStats;
 use stratify_jev_judge::model::{Confidence, Finding, Report, Severity};
 
 /// A finding is shown when its confidence reaches the threshold, or when
@@ -3202,12 +3219,7 @@ fn reason_of(f: &Finding) -> Option<&str> {
 
 /// Human output keeps the engine's line shape and adds a reason under
 /// anything the model moved, then one summary line.
-pub fn render(
-    report: &Report,
-    _stats: &RunStats,
-    min: Confidence,
-    show_dismissed: bool,
-) -> String {
+pub fn render(report: &Report, min: Confidence, show_dismissed: bool) -> String {
     let mut out = String::new();
     let mut shown = 0usize;
 
@@ -3622,12 +3634,9 @@ fn plan_only(report: &Report, cfg: &JevConfig) -> usize {
 
 fn render(args: &Args, report: &Report) -> String {
     match args.format {
-        Format::Human => output::human::render(
-            report,
-            &Default::default(),
-            args.min_confidence.into(),
-            args.show_dismissed,
-        ),
+        Format::Human => {
+            output::human::render(report, args.min_confidence.into(), args.show_dismissed)
+        }
         Format::Json => output::json::render(report, VERSION),
     }
 }
