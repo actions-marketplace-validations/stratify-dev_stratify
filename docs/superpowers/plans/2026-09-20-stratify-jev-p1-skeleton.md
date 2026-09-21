@@ -1111,6 +1111,32 @@ mod tests {
     }
 
     #[test]
+    fn with_state_root_renders_the_placeholder_in_instructions_only() {
+        let q = Question::noul(
+            "Would a framework invoke `{root}.function`, given `{root}.occurrences`?",
+            Some(NoulCriteria {
+                yes: "Something outside ordinary call syntax reaches it.".into(),
+                no: "Only an ordinary call would reach it.".into(),
+            }),
+        );
+        let v = serde_json::to_value(q.with_state_root("finding_3")).unwrap();
+        let text = v["instructions"].as_str().unwrap();
+        assert!(text.contains("finding_3.function"), "got {text}");
+        assert!(text.contains("finding_3.occurrences"), "got {text}");
+        assert!(!text.contains("{root}"), "placeholder must be gone: {text}");
+        // Criteria say what counts as an answer, not where evidence lives.
+        assert_eq!(v["criteria"]["true"], "Something outside ordinary call syntax reaches it.");
+    }
+
+    #[test]
+    fn with_state_root_leaves_a_question_without_the_placeholder_alone() {
+        let q = Question::choice("Why?", [("a", "A"), ("cannot_tell", "Unclear")]);
+        let before = serde_json::to_value(&q).unwrap();
+        let after = serde_json::to_value(q.with_state_root("finding_0")).unwrap();
+        assert_eq!(before, after);
+    }
+
+    #[test]
     fn request_carries_state_model_and_named_questions() {
         let req = SystemOneRequest {
             state: json!({ "finding_0": { "name": "helper" } }),
@@ -1173,6 +1199,59 @@ pub enum Question {
 }
 
 impl Question {
+    /// Replace every `{root}` placeholder in this question's instructions
+    /// with `root`, returning the rendered question.
+    ///
+    /// A batched request puts each finding's state under its own key
+    /// (`finding_0`, `finding_1`, ...) and namespaces question names by
+    /// slot. Without this, every slot's questions would carry byte-identical
+    /// text referring to a bare state key that does not exist at the top
+    /// level, and nothing on the wire would bind a question to the finding
+    /// it is about. The model would receive N indistinguishable copies of
+    /// one question against N candidates.
+    ///
+    /// Criteria are deliberately not rendered: they describe what counts as
+    /// an answer, never where the evidence lives.
+    pub fn with_state_root(&self, root: &str) -> Question {
+        fn render(v: &serde_json::Value, root: &str) -> serde_json::Value {
+            match v {
+                serde_json::Value::String(t) => {
+                    serde_json::Value::String(t.replace("{root}", root))
+                }
+                serde_json::Value::Array(items) => {
+                    serde_json::Value::Array(items.iter().map(|i| render(i, root)).collect())
+                }
+                serde_json::Value::Object(map) => serde_json::Value::Object(
+                    map.iter().map(|(k, i)| (k.clone(), render(i, root))).collect(),
+                ),
+                other => other.clone(),
+            }
+        }
+        match self {
+            Question::Noul {
+                instructions,
+                criteria,
+            } => Question::Noul {
+                instructions: render(instructions, root),
+                criteria: criteria.clone(),
+            },
+            Question::Choice {
+                instructions,
+                criteria,
+            } => Question::Choice {
+                instructions: render(instructions, root),
+                criteria: criteria.clone(),
+            },
+            Question::Score {
+                instructions,
+                criteria,
+            } => Question::Score {
+                instructions: render(instructions, root),
+                criteria: criteria.clone(),
+            },
+        }
+    }
+
     pub fn noul(instructions: impl Into<String>, criteria: Option<NoulCriteria>) -> Question {
         Question::Noul {
             instructions: serde_json::Value::String(instructions.into()),
@@ -2736,6 +2815,25 @@ mod tests {
         assert!(attributes_above(&ctx, "src/app.py", line).is_empty());
     }
 
+    /// Every question must name its state root. Without the placeholder, a
+    /// batched request sends byte-identical text for every slot and nothing
+    /// on the wire says which finding a question is about.
+    #[test]
+    fn every_question_references_its_state_root() {
+        for (name, q) in DeadCodeJudge.questions() {
+            let v = serde_json::to_value(&q).unwrap();
+            let text = v["instructions"].as_str().unwrap();
+            assert!(
+                text.contains("{root}."),
+                "question `{name}` names no state root: {text}"
+            );
+            assert!(
+                !text.contains("`function`"),
+                "question `{name}` still names a bare state key: {text}"
+            );
+        }
+    }
+
     #[test]
     fn asks_five_questions_with_canonical_names() {
         let q = DeadCodeJudge.questions();
@@ -3294,11 +3392,12 @@ impl Judge for DeadCodeJudge {
     }
 
     fn version(&self) -> u32 {
-        // 2: state gained occurrences, in_test_context and engine_confidence,
-        // and the question set gained resolver_missed_a_call. Every cached
-        // answer from version 1 was produced without that evidence, so the
-        // bump must invalidate them.
-        2
+        // 3: question text now names its state root (`{root}.function`), so
+        // every question in a batch binds to the finding it is about, and
+        // test_only finally references in_test_context. A version-2 answer
+        // was produced from text naming a bare key that is not present at
+        // the top level of a batched request.
+        3
     }
 
     fn full_strength(&self) -> Severity {
@@ -3344,7 +3443,8 @@ impl Judge for DeadCodeJudge {
                 Question::noul(
                     "Would a framework, dependency-injection container, reflection call, \
                      route table, serializer, or plugin registry invoke the function in \
-                     `function` without any explicit call to it appearing in source?",
+                     `{root}.function` without any explicit call to it appearing in \
+                     source?",
                     Some(NoulCriteria {
                         yes: "Something outside ordinary call syntax reaches this function: \
                               an annotation or attribute registers it, a container wires it, \
@@ -3358,8 +3458,9 @@ impl Judge for DeadCodeJudge {
             (
                 "test_only".to_string(),
                 Question::noul(
-                    "Does the function in `function` exist only to support tests, such as a \
-                     fixture builder, a test helper, or an assertion utility?",
+                    "Given `{root}.in_test_context`, does the function in `{root}.function` \
+                     exist only to support tests, such as a fixture builder, a test \
+                     helper, or an assertion utility?",
                     Some(NoulCriteria {
                         yes: "Its purpose is setting up or supporting tests, and production \
                               code has no reason to call it.".into(),
@@ -3370,8 +3471,9 @@ impl Judge for DeadCodeJudge {
             (
                 "external_api".to_string(),
                 Question::noul(
-                    "Is the function in `function` part of a public API surface intended for \
-                     consumers outside this repository, given `project_markers`?",
+                    "Is the function in `{root}.function` part of a public API surface \
+                     intended for consumers outside this repository, given \
+                     `{root}.project_markers`?",
                     Some(NoulCriteria {
                         yes: "It is exported for other codebases to call, and no caller inside \
                               this repository is expected.".into(),
@@ -3385,7 +3487,8 @@ impl Judge for DeadCodeJudge {
                 Question::noul(
                     "The engine that produced this finding resolves calls statically and \
                      cannot follow every one, particularly across crate, package, or module \
-                     boundaries. Given `occurrences`, which lists where this name appears \
+                     boundaries. Given `{root}.occurrences`, which lists where this name \
+                     appears \
                      elsewhere in the repository, does a real call site exist that the \
                      engine failed to connect to this function?",
                     Some(NoulCriteria {
@@ -3403,11 +3506,13 @@ impl Judge for DeadCodeJudge {
             (
                 "explanation".to_string(),
                 Question::choice(
-                    "A static analyzer found no call to the function in `function` anywhere \
-                     in this repository. `occurrences` lists where the name appears \
+                    "A static analyzer found no call to the function in `{root}.function` \
+                     anywhere in this repository. `{root}.occurrences` lists where the \
+                     name appears \
                      elsewhere, so a real call site there would mean the analyzer failed to \
-                     resolve it rather than that the code is dead. Given `occurrences`, \
-                     `in_test_context`, and `engine_confidence`, what best explains the \
+                     resolve it rather than that the code is dead. Given \
+                     `{root}.occurrences`, `{root}.in_test_context`, and \
+                     `{root}.engine_confidence`, what best explains the \
                      absence of a detected call?",
                     [
                         ("framework_invoked", "A framework, container, or registry calls it without an explicit call site."),
@@ -3608,6 +3713,52 @@ mod tests {
         assert_eq!(r.findings[0].confidence, Confidence::Unknown);
         assert_eq!(r.findings[0].extra["judgment"]["verdict"], "dismiss");
         assert_eq!(r.findings[0].extra["judgment"]["model"], "jev-1.13.0");
+    }
+
+    /// The send side. Every other async test hard-codes `s0__` in the mock
+    /// response, so they prove the strip works and say nothing about what
+    /// went out. With one finding per batch a send/strip mismatch is
+    /// invisible, and so is a question that names no slot at all.
+    #[tokio::test]
+    async fn a_batch_binds_each_question_to_its_own_finding() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "model": "jev-1.13.0",
+                "answers": {},
+                "usage": { "input_tokens": 10, "output_tokens": 0 }
+            })))
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let d = Driver::new(
+            Some(Client::new(server.uri(), "k".into())),
+            Cache::new(dir.path().into(), false),
+            JevConfig::default(),
+        );
+        let mut r = report(2);
+        d.run(&mut r, &ctx()).await;
+
+        let sent = server.received_requests().await.unwrap();
+        assert_eq!(sent.len(), 1, "two findings fit one batch");
+        let body: serde_json::Value = serde_json::from_slice(&sent[0].body).unwrap();
+
+        assert!(body["state"]["finding_0"].is_object());
+        assert!(body["state"]["finding_1"].is_object());
+
+        let q0 = body["questions"]["s0__framework_invoked"]["instructions"]
+            .as_str()
+            .expect("slot 0 question present");
+        let q1 = body["questions"]["s1__framework_invoked"]["instructions"]
+            .as_str()
+            .expect("slot 1 question present");
+
+        assert!(q0.contains("finding_0."), "slot 0 must name its own state: {q0}");
+        assert!(q1.contains("finding_1."), "slot 1 must name its own state: {q1}");
+        assert!(!q0.contains("finding_1."), "slot 0 must not name slot 1: {q0}");
+        assert!(!q0.contains("{root}"), "the placeholder must be rendered: {q0}");
+        assert_ne!(q0, q1, "identical text for two slots binds neither");
     }
 
     #[tokio::test]
@@ -3852,9 +4003,19 @@ impl Driver {
                 let mut state = serde_json::Map::new();
                 let mut qs: BTreeMap<String, Question> = BTreeMap::new();
                 for (slot, &mi) in batch.iter().enumerate() {
-                    state.insert(format!("finding_{slot}"), misses[mi].state.clone());
+                    let root = format!("finding_{slot}");
+                    state.insert(root.clone(), misses[mi].state.clone());
                     for (name, q) in &questions {
-                        qs.insert(format!("{}{}", slot_prefix(slot), name), q.clone());
+                        // Both halves matter. The name prefix routes the
+                        // answer back to this slot; rendering the root into
+                        // the instructions is what tells the model which of
+                        // the batch's findings the question is about. With
+                        // only the prefix, every slot sends byte-identical
+                        // text and the binding exists nowhere on the wire.
+                        qs.insert(
+                            format!("{}{}", slot_prefix(slot), name),
+                            q.with_state_root(&root),
+                        );
                     }
                 }
                 let req = SystemOneRequest {
