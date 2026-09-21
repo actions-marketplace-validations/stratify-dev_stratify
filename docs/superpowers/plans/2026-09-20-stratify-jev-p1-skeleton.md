@@ -3782,6 +3782,7 @@ mod tests {
                     "s0__framework_invoked": { "noul": 0.95 },
                     "s0__test_only": { "noul": 0.01 },
                     "s0__external_api": { "noul": 0.02 },
+                    "s0__resolver_missed_a_call": { "noul": 0.03 },
                     "s0__explanation": {
                         "choice": "framework_invoked",
                         "probabilities": {},
@@ -3882,6 +3883,66 @@ mod tests {
             .count();
         assert_eq!(changed, 1, "one finding judged");
         assert_eq!(identical, 1, "the other byte-identical to input");
+    }
+
+    /// I3: a response missing one of the judge's five canonical keys is
+    /// still applied (a missing answer just means Keep), but must never be
+    /// cached. A cached partial body would be replayed forever with no way
+    /// back except a version bump that discards every other entry too.
+    /// `.expect(2)` on the mock is the check: caching the partial answer
+    /// would serve the second run from disk and this mock would only see
+    /// one request.
+    ///
+    /// Four of five rather than one of five, because a model skipping a
+    /// single question is the realistic shape of this failure.
+    #[tokio::test]
+    async fn a_partial_answer_set_is_applied_but_never_cached() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "model": "jev-1.13.0",
+                "answers": {
+                    "s0__framework_invoked": { "noul": 0.95 },
+                    "s0__test_only": { "noul": 0.01 },
+                    "s0__external_api": { "noul": 0.02 },
+                    "s0__explanation": {
+                        "choice": "framework_invoked",
+                        "probabilities": {},
+                        "confidence": 0.9
+                    }
+                    // resolver_missed_a_call is intentionally absent: one
+                    // of dead_code's five canonical keys is missing.
+                },
+                "usage": { "input_tokens": 300, "output_tokens": 0 }
+            })))
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let make = || {
+            Driver::new(
+                Some(Client::new(server.uri(), "k".into())),
+                Cache::new(dir.path().into(), true),
+                JevConfig::default(),
+            )
+        };
+
+        let mut first = report(1);
+        let s1 = make().run(&mut first, &ctx()).await;
+        assert_eq!(s1.requested, 1);
+        assert_eq!(s1.judged, 1, "a partial set is still applied");
+        // resolver_missed_a_call is the only missing key; decide's
+        // early-return-to-Keep only fires when framework_invoked, test_only
+        // or external_api is missing, and all three are present here. The
+        // other four keys still drive a normal decision: framework_invoked
+        // at 0.95 legitimately dismisses.
+        assert_eq!(first.findings[0].extra["judgment"]["verdict"], "dismiss");
+
+        let mut second = report(1);
+        let stats = make().run(&mut second, &ctx()).await;
+        assert_eq!(stats.from_cache, 0, "a partial set must not be cached");
+        assert_eq!(stats.requested, 1, "so the second run asks again");
     }
 
     #[tokio::test]
