@@ -3679,6 +3679,67 @@ mod tests {
         assert_eq!(b, vec![vec![0]]);
     }
 
+    #[test]
+    fn plan_counts_batches_and_discounts_the_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = JevConfig {
+            batch_findings: 2,
+            ..JevConfig::default()
+        };
+        let d = Driver::new(None, Cache::new(dir.path().into(), true), cfg);
+        // Five dead_code findings at two per batch is three requests.
+        assert_eq!(d.plan(&report(5), &ctx()), 3);
+        // A report with nothing this judge claims costs nothing.
+        assert_eq!(d.plan(&report(0), &ctx()), 0);
+    }
+
+    #[tokio::test]
+    async fn a_cached_finding_is_not_counted_in_the_plan() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "model": "jev-1.13.0",
+                "answers": {
+                    "s0__framework_invoked": { "noul": 0.95 },
+                    "s0__test_only": { "noul": 0.01 },
+                    "s0__external_api": { "noul": 0.02 },
+                    "s0__resolver_missed_a_call": { "noul": 0.03 },
+                    "s0__explanation": {
+                        "choice": "framework_invoked",
+                        "probabilities": {},
+                        "confidence": 0.9
+                    }
+                },
+                "usage": { "input_tokens": 300, "output_tokens": 0 }
+            })))
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cache = || Cache::new(dir.path().into(), true);
+
+        // Before anything is cached the plan is one request.
+        assert_eq!(
+            Driver::new(None, cache(), JevConfig::default()).plan(&report(1), &ctx()),
+            1
+        );
+
+        // Answer it for real, then the plan is zero. This is the steady
+        // state the README recommends, and a plan that ignored the cache
+        // would still say one.
+        let d = Driver::new(
+            Some(Client::new(server.uri(), "k".into())),
+            cache(),
+            JevConfig::default(),
+        );
+        d.run(&mut report(1), &ctx()).await;
+
+        assert_eq!(
+            Driver::new(None, cache(), JevConfig::default()).plan(&report(1), &ctx()),
+            0
+        );
+    }
+
     #[tokio::test]
     async fn without_a_client_the_report_passes_through_untouched() {
         let dir = tempfile::tempdir().unwrap();
@@ -4080,6 +4141,44 @@ impl Driver {
         }
     }
 
+    /// How many requests a real run would send right now.
+    ///
+    /// Runs the same prepare and cache-split path as `run`, so a committed
+    /// cache is reflected: a finding already answered costs nothing and is
+    /// not counted. Sends nothing and needs no client, so `--dry-run` works
+    /// without a key.
+    pub fn plan(&self, report: &Report, ctx: &RepoContext) -> usize {
+        let mut requests = 0;
+        for judge in registry() {
+            let questions = judge.questions();
+            let mut misses: Vec<usize> = Vec::new();
+            for f in report.findings.iter().filter(|f| f.rule == judge.rule()) {
+                let state = judge.state_for(f, ctx);
+                let key = cache_key(
+                    judge.rule(),
+                    judge.version(),
+                    &self.cfg.model,
+                    &state,
+                    &questions,
+                );
+                if self.cache.get(&key).is_none() {
+                    misses.push(estimate_tokens(&state, &questions));
+                }
+            }
+            if misses.is_empty() {
+                continue;
+            }
+            requests += plan_batches(
+                misses.len(),
+                self.cfg.batch_findings,
+                &misses,
+                TOKEN_CEILING,
+            )
+            .len();
+        }
+        requests
+    }
+
     /// Judge every finding a registered judge claims. Findings the model
     /// never reaches, for any reason, are left exactly as the engine
     /// reported them.
@@ -4451,6 +4550,28 @@ mod tests {
         assert!(out.contains("jev: reached by a framework (0.91)"), "got:\n{out}");
     }
 
+    /// The behavior the whole product exists for: a finding the model
+    /// dismissed must not fail a build, even at a severity that otherwise
+    /// would. Only confidence separates it from one that should.
+    #[test]
+    fn visibility_is_what_separates_a_dismissed_warning_from_a_live_one() {
+        let dismissed = Finding {
+            severity: Severity::Warning,
+            confidence: Confidence::Unknown,
+            ..finding(Confidence::Unknown, true)
+        };
+        let live = Finding {
+            severity: Severity::Warning,
+            confidence: Confidence::Certain,
+            ..finding(Confidence::Certain, false)
+        };
+        // Same severity, opposite outcomes, decided by confidence alone.
+        assert!(!visible(&dismissed, Confidence::Likely, false));
+        assert!(visible(&live, Confidence::Likely, false));
+        // And --show-dismissed brings the dismissed one back into view.
+        assert!(visible(&dismissed, Confidence::Likely, true));
+    }
+
     #[test]
     fn the_summary_names_shown_and_dismissed_counts() {
         let r = report(vec![
@@ -4505,15 +4626,45 @@ mod tests {
         assert_eq!(v["findings"][0]["confidence"], "unknown");
     }
 
+    /// The auditability guarantee. A dismissed finding leaves human output
+    /// but must stay in the JSON with its judgment intact, or the model can
+    /// hide something with no trace.
     #[test]
-    fn dismissed_findings_are_never_dropped_from_json() {
+    fn a_dismissed_finding_survives_in_json_with_its_judgment() {
+        let mut extra = serde_json::Map::new();
+        extra.insert(
+            "judgment".into(),
+            serde_json::json!({
+                "verdict": "dismiss",
+                "reason": "reached by a framework (0.91)",
+                "answers": { "framework_invoked": 0.91 },
+                "original": { "severity": "warning", "confidence": "certain" }
+            }),
+        );
         let r = Report {
             schema_version: 1,
-            findings: vec![],
+            findings: vec![Finding {
+                rule: "dead_code".into(),
+                severity: Severity::Info,
+                message: "possibly unused function `helper`".into(),
+                span: Span {
+                    file: "src/a.rs".into(),
+                    start_byte: 0,
+                    end_byte: 1,
+                    start_line: 6,
+                },
+                // Dismissed: below the default display threshold.
+                confidence: Confidence::Unknown,
+                extra,
+            }],
             extra: serde_json::Map::new(),
         };
         let v: serde_json::Value = serde_json::from_str(&render(&r, "0.1.0")).unwrap();
-        assert!(v["findings"].is_array());
+        assert_eq!(v["findings"].as_array().unwrap().len(), 1, "never dropped");
+        assert_eq!(v["findings"][0]["confidence"], "unknown");
+        assert_eq!(v["findings"][0]["judgment"]["verdict"], "dismiss");
+        assert_eq!(v["findings"][0]["judgment"]["answers"]["framework_invoked"], 0.91);
+        assert_eq!(v["findings"][0]["judgment"]["original"]["severity"], "warning");
     }
 }
 ```
@@ -4649,7 +4800,6 @@ EOF
 [dev-dependencies]
 assert_cmd = "2"
 predicates = "3"
-tempfile = "3"
 ```
 
 - [ ] **Step 2: Create the report fixture**
@@ -4713,8 +4863,47 @@ fn without_an_api_key_the_report_passes_through_and_exits_zero() {
 
     let body = String::from_utf8(out.get_output().stdout.clone()).unwrap();
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(v["findings"].as_array().unwrap().len(), 2);
+    let input: serde_json::Value = serde_json::from_str(&report_json()).unwrap();
+    // Byte-identical, not merely the right count: a pass-through that
+    // corrupted a severity or a span would otherwise slip through.
+    assert_eq!(v["findings"], input["findings"], "untouched");
     assert!(v["findings"][0].get("judgment").is_none());
+}
+
+/// A root we cannot read stops judgment, not the report. Verified against
+/// the guarantee rather than against the exit code alone: an earlier
+/// version printed a clean error and exit 2, which looks correct until you
+/// notice stdout is empty and --fail-on never still failed.
+#[test]
+fn an_unreadable_root_still_passes_the_report_through() {
+    let out = Command::cargo_bin("stratify-jev")
+        .unwrap()
+        .env_remove("TYPESAFE_API_KEY")
+        .args(["--root", "/no/such/directory/anywhere", "--format", "json"])
+        .write_stdin(report_json())
+        .assert()
+        .success();
+
+    let body = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["findings"].as_array().unwrap().len(), 2, "the report still goes out");
+}
+
+#[test]
+fn an_unreadable_root_respects_fail_on_never() {
+    Command::cargo_bin("stratify-jev")
+        .unwrap()
+        .env_remove("TYPESAFE_API_KEY")
+        .args([
+            "--root",
+            "/no/such/directory/anywhere",
+            "--fail-on",
+            "never",
+        ])
+        .write_stdin(report_json())
+        .assert()
+        .success()
+        .stderr(predicates::str::contains("nothing was judged"));
 }
 
 #[test]
@@ -4904,17 +5093,33 @@ async fn main() -> ExitCode {
         return exit_code(&args, &report);
     }
 
+    // A root we cannot read means judgment cannot run. It does not mean the
+    // engine's findings stop being valid, so the report still goes out and
+    // --fail-on still gates on it, exactly like the missing-key path. Doing
+    // otherwise would let a misconfigured checkout path hard-fail a build
+    // that asked for --fail-on never, and would hand a downstream SARIF
+    // converter an empty pipe.
     let ctx = match RepoContext::new(args.root.clone()) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("stratify-jev: cannot read {}: {e}", args.root.display());
-            return ExitCode::from(2);
+            eprintln!(
+                "stratify-jev: cannot read {}: {e}. Passing the report through \
+                 unchanged, nothing was judged",
+                args.root.display()
+            );
+            print!("{}", render(&args, &report));
+            return exit_code(&args, &report);
         }
     };
     let cfg = JevConfig::load(&args.root);
+    let cache = Cache::new(args.root.join(&args.cache_dir), !args.no_cache);
 
     if args.dry_run {
-        let planned = plan_only(&report, &cfg);
+        // Counted through the same prepare-and-cache-split path a real run
+        // takes, so a committed cache is reflected. A preview that ignores
+        // the cache overstates cost in exactly the steady state the README
+        // recommends.
+        let planned = Driver::new(None, cache, cfg).plan(&report, &ctx);
         println!("{planned} request(s) planned, nothing sent.");
         return ExitCode::SUCCESS;
     }
@@ -4926,7 +5131,6 @@ async fn main() -> ExitCode {
             );
         }
         Some(client) => {
-            let cache = Cache::new(args.root.join(&args.cache_dir), !args.no_cache);
             let driver = Driver::new(Some(client), cache, cfg);
             let stats = driver.run(&mut report, &ctx).await;
             if args.verbose {
@@ -4950,19 +5154,6 @@ async fn main() -> ExitCode {
 
     print!("{}", render(&args, &report));
     exit_code(&args, &report)
-}
-
-/// Count the requests a real run would send, without building a client.
-fn plan_only(report: &Report, cfg: &JevConfig) -> usize {
-    let claimed = report
-        .findings
-        .iter()
-        .filter(|f| f.rule == "dead_code")
-        .count();
-    if claimed == 0 {
-        return 0;
-    }
-    claimed.div_ceil(cfg.batch_findings.max(1))
 }
 
 fn render(args: &Args, report: &Report) -> String {
@@ -5043,6 +5234,11 @@ a dependency of the scan.
 ## Options
 
 Run `stratify-jev --help`.
+
+`--dry-run` reports how many requests a real run would send and sends
+nothing. It counts through the same cache check a real run uses, so a
+committed cache shows as zero requests. It always exits 0, since it is a
+preview rather than a gate.
 
 ## Cache
 
