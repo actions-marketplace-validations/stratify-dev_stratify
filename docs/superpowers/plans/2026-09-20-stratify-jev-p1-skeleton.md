@@ -923,12 +923,16 @@ fn names_test_module(t: &str) -> bool {
 /// (`test_*.py`, `*_test.py`, `tests/`) and is the safer instrument.
 fn opens_test_block(line: &str, following: Option<&str>) -> bool {
     let t = line.trim();
-    let names_tests =
-        t.starts_with("#[cfg(test)]") || names_test_module(t) || t.starts_with("describe(");
-    if !names_tests {
-        return false;
+    // A bare `#[cfg(test)]` attribute never opens a block itself: the `mod`
+    // it applies to is the next line, so only this branch consults
+    // `following`. `mod tests;` and `describe(...)` are complete statements
+    // on their own line, and peeking past them would let an unrelated brace
+    // on the next, unconnected line arm the flag: `mod tests;` followed by a
+    // production function's own `{` measured exactly this.
+    if t.starts_with("#[cfg(test)]") {
+        return opens_a_block(t) || following.map(str::trim).is_some_and(opens_a_block);
     }
-    opens_a_block(t) || following.map(str::trim).is_some_and(opens_a_block)
+    (names_test_module(t) || t.starts_with("describe(")) && opens_a_block(t)
 }
 
 /// Largest char boundary at or below `i`. Index 0 is always a boundary, so
