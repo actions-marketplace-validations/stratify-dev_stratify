@@ -105,10 +105,9 @@ fn resolve_relative_py(
         for seg in module.split('.') {
             parts.push(seg.to_string());
         }
-    } else if let Some(n) = name {
-        parts.push(n.to_string());
     } else {
-        return None;
+        let n = name?;
+        parts.push(n.to_string());
     }
     Some(parts.join("/"))
 }

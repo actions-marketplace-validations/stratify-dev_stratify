@@ -7,6 +7,12 @@ and versioning follows [Semantic Versioning](https://semver.org/) (pre-1.0,
 so a minor bump can still carry a behavior change; patch bumps stay
 backward-compatible).
 
+## [Unreleased]
+
+### Changed
+- The Rust adapter records `use` declarations as imports, and a Rust file's
+  module key is now its own path instead of its parent directory.
+
 ## [0.6.0] - 2026-09-01
 
 ### Added

@@ -29,11 +29,172 @@ const COMPLEXITY_RULES: ComplexityRules = ComplexityRules {
     operator_texts: &["&&", "||"],
 };
 
-fn package_dir(path: &str) -> String {
-    std::path::Path::new(path)
-        .parent()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_default()
+/// Flatten the text of a `use` tree into one path per imported item.
+/// `a::{b, c::{d, e}, self}` gives `a::b`, `a::c::d`, `a::c::e`, `a`.
+/// Aliases (`x as y`) keep the path. Globs (`m::*`) keep the module path.
+/// A leading `::` is dropped.
+pub(crate) fn expand_use_tree(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    expand_into("", text, &mut out);
+    out
+}
+
+fn join_path(prefix: &str, rest: &str) -> String {
+    match (prefix.is_empty(), rest.is_empty()) {
+        (true, _) => rest.to_string(),
+        (_, true) => prefix.to_string(),
+        _ => format!("{prefix}::{rest}"),
+    }
+}
+
+/// Split `inner` on commas at brace depth zero.
+fn split_top_level(inner: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (i, ch) in inner.char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                parts.push(&inner[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&inner[start..]);
+    parts
+}
+
+fn expand_into(prefix: &str, tree: &str, out: &mut Vec<String>) {
+    let tree = tree.trim();
+    let tree = tree.strip_prefix("::").unwrap_or(tree).trim();
+    if tree.is_empty() {
+        return;
+    }
+    if let (Some(open), Some(close)) = (tree.find('{'), tree.rfind('}')) {
+        let head: String = tree[..open]
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        let base = join_path(prefix, head.trim_end_matches("::"));
+        for item in split_top_level(&tree[open + 1..close]) {
+            if item.trim() == "self" {
+                if !base.is_empty() {
+                    out.push(base.clone());
+                }
+            } else {
+                expand_into(&base, item, out);
+            }
+        }
+        return;
+    }
+    // Drop an `as alias` suffix, then any whitespace inside the path.
+    let tokens: Vec<&str> = tree.split_whitespace().collect();
+    let path_tokens: Vec<&str> = tokens.iter().take_while(|t| **t != "as").copied().collect();
+    let path: String = path_tokens.concat();
+    let path = path.trim_end_matches('*').trim_end_matches("::");
+    let full = join_path(prefix, path);
+    if !full.is_empty() {
+        out.push(full);
+    }
+}
+
+/// Count `mod name { ... }` blocks enclosing `node`. A `mod name;` declaration
+/// has no body and never encloses anything, so every ancestor `mod_item` is inline.
+fn inline_mod_depth(node: Node) -> usize {
+    let mut depth = 0;
+    let mut cur = node.parent();
+    while let Some(n) = cur {
+        if n.kind() == "mod_item" {
+            depth += 1;
+        }
+        cur = n.parent();
+    }
+    depth
+}
+
+/// Rebase a `use` path written inside `depth` inline modules onto the file's
+/// own module. Returns None when the path points inside this same file
+/// (`self::...`, or no more `super`s than inline levels).
+fn rebase_for_inline_mods(path: &str, depth: usize) -> Option<String> {
+    if depth == 0 {
+        return Some(path.to_string());
+    }
+    let segs: Vec<&str> = path.split("::").collect();
+    if segs[0] == "self" {
+        return None;
+    }
+    let supers = segs.iter().take_while(|s| **s == "super").count();
+    if supers == 0 {
+        return Some(path.to_string());
+    }
+    if supers <= depth {
+        return None;
+    }
+    Some(segs[depth..].join("::"))
+}
+
+/// Emit one Dependency + Imports edge per distinct `use` path in this file.
+/// Raw paths only: the repo-wide `resolve::rust_imports` pass maps them to files.
+fn extract_imports(
+    g: &mut IrGraph,
+    lang: &tree_sitter::Language,
+    root: Node,
+    src: &str,
+    file: &str,
+    file_id: SymbolId,
+) {
+    let query =
+        Query::new(lang, "(use_declaration argument: (_) @arg) @decl").expect("rust use query");
+    let arg_idx = query.capture_index_for_name("arg").unwrap();
+    let decl_idx = query.capture_index_for_name("decl").unwrap();
+
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut found: Vec<(String, Node)> = Vec::new();
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&query, root, src.as_bytes());
+    while let Some(m) = matches.next() {
+        let mut arg = None;
+        let mut decl = None;
+        for cap in m.captures {
+            if cap.index == arg_idx {
+                arg = Some(cap.node);
+            } else if cap.index == decl_idx {
+                decl = Some(cap.node);
+            }
+        }
+        let (Some(arg), Some(decl)) = (arg, decl) else {
+            continue;
+        };
+        let depth = inline_mod_depth(decl);
+        for path in expand_use_tree(walk::node_text(arg, src)) {
+            if let Some(p) = rebase_for_inline_mods(&path, depth) {
+                if seen.insert(p.clone()) {
+                    found.push((p, decl));
+                }
+            }
+        }
+    }
+    for (path, decl) in found {
+        let dep_id = g.add_symbol(Symbol {
+            id: SymbolId(0),
+            kind: SymbolKind::Dependency,
+            name: path.clone(),
+            fqn: path,
+            span: walk::span(decl, file),
+            visibility: Visibility::Unknown,
+            confidence: Confidence::Certain,
+        });
+        g.add_reference(Reference {
+            from: file_id,
+            to: dep_id,
+            kind: RefKind::Imports,
+            span: walk::span(decl, file),
+            confidence: Confidence::Certain,
+        });
+    }
 }
 
 /// Find the function that lexically encloses `node` by matching byte ranges
@@ -338,12 +499,12 @@ pub(crate) fn extract(file: &str, src: &str) -> IrGraph {
 
     let mut g = IrGraph::new();
 
-    // File symbol — fqn is the parent dir of the path (mirror go).
+    // File symbol: fqn is the file path. A Rust file is one module.
     let file_id = g.add_symbol(Symbol {
         id: SymbolId(0),
         kind: SymbolKind::File,
         name: file.to_string(),
-        fqn: package_dir(file),
+        fqn: file.to_string(),
         span: walk::span(root, file),
         visibility: Visibility::Unknown,
         confidence: Confidence::Certain,
@@ -351,8 +512,7 @@ pub(crate) fn extract(file: &str, src: &str) -> IrGraph {
 
     walk::tokenize(&mut g, root, src, file, &NORMALIZE_RULES);
 
-    // NOTE: No import edges. `use`/`mod` resolution is intentionally out of scope
-    // for Rust (boundaries/cycles deferred), mirroring how M13 Go shipped.
+    extract_imports(&mut g, &lang, root, src, file, file_id);
 
     extract_symbols(&mut g, &lang, root, src, file, file_id);
 
@@ -671,14 +831,86 @@ fn m(x: i32) -> i32 {
         );
     }
 
+    fn import_names(g: &IrGraph) -> Vec<String> {
+        let mut v: Vec<String> = g
+            .references()
+            .iter()
+            .filter(|r| matches!(r.kind, RefKind::Imports))
+            .map(|r| g.symbol(r.to).unwrap().name.clone())
+            .collect();
+        v.sort();
+        v
+    }
+
     #[test]
-    fn file_fqn_is_parent_dir() {
+    fn file_fqn_is_file_path() {
         let g = extract("src/svc/a.rs", "fn a() {}\n");
         let f = g
             .symbols()
             .iter()
             .find(|s| s.kind == SymbolKind::File)
             .unwrap();
-        assert_eq!(f.fqn, "src/svc");
+        assert_eq!(f.fqn, "src/svc/a.rs");
+    }
+
+    #[test]
+    fn expands_use_trees() {
+        assert_eq!(expand_use_tree("crate::a::b"), vec!["crate::a::b"]);
+        assert_eq!(
+            expand_use_tree("crate::a::{b, c::{d, e}, self}"),
+            vec![
+                "crate::a::b",
+                "crate::a::c::d",
+                "crate::a::c::e",
+                "crate::a"
+            ]
+        );
+        assert_eq!(expand_use_tree("super::x as y"), vec!["super::x"]);
+        assert_eq!(expand_use_tree("crate::m::*"), vec!["crate::m"]);
+        assert_eq!(expand_use_tree("::std::fmt"), vec!["std::fmt"]);
+        assert_eq!(
+            expand_use_tree("a::{\n    b,\n    c as d,\n}"),
+            vec!["a::b", "a::c"]
+        );
+    }
+
+    #[test]
+    fn emits_import_per_use_path() {
+        let src = "use crate::a::{b, c};\npub use super::d;\nfn f() {}\n";
+        let g = extract("src/x.rs", src);
+        assert_eq!(
+            import_names(&g),
+            vec!["crate::a::b", "crate::a::c", "super::d"]
+        );
+    }
+
+    #[test]
+    fn use_inside_inline_test_module_stays_in_file() {
+        // `super` from `mod tests` is this file: no import edge.
+        let src =
+            "fn f() {}\n#[cfg(test)]\nmod tests {\n    use super::*;\n    use self::inner::x;\n}\n";
+        let g = extract("src/x.rs", src);
+        assert!(import_names(&g).is_empty(), "{:?}", import_names(&g));
+    }
+
+    #[test]
+    fn super_super_inside_inline_module_keeps_one_level() {
+        let src = "mod inner {\n    use super::super::y;\n}\n";
+        let g = extract("src/a/x.rs", src);
+        assert_eq!(import_names(&g), vec!["super::y"]);
+    }
+
+    #[test]
+    fn crate_path_inside_inline_module_is_unchanged() {
+        let src = "mod inner {\n    use crate::z::w;\n}\n";
+        let g = extract("src/x.rs", src);
+        assert_eq!(import_names(&g), vec!["crate::z::w"]);
+    }
+
+    #[test]
+    fn duplicate_use_paths_emit_once() {
+        let src = "use crate::a::b;\nmod m { use crate::a::b; }\n";
+        let g = extract("src/x.rs", src);
+        assert_eq!(import_names(&g), vec!["crate::a::b"]);
     }
 }
