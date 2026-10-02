@@ -36,3 +36,31 @@ fn rust_layer_boundary_is_enforced() {
         "stdout: {stdout}"
     );
 }
+
+#[test]
+fn rust_facade_reexport_is_not_a_cycle() {
+    let stdout = scan("tests/sample-rustfacade");
+    assert_eq!(
+        stdout.matches("\"rule\": \"cycle\"").count(),
+        0,
+        "stdout: {stdout}"
+    );
+}
+
+#[test]
+fn rust_glob_facade_cycle_is_info_likely() {
+    let stdout = scan("tests/sample-rustglob");
+    assert_eq!(
+        stdout.matches("\"rule\": \"cycle\"").count(),
+        1,
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("\"severity\": \"info\""),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("\"confidence\": \"likely\""),
+        "stdout: {stdout}"
+    );
+}

@@ -160,7 +160,7 @@ pub fn analyze(graph: &IrGraph, config: &BoundaryConfig) -> Vec<Finding> {
         let Some(src_layer) = classify(src, &layers) else {
             continue;
         };
-        for tgt in targets {
+        for (tgt, edge_confidence) in targets {
             let Some(tgt_layer) = classify(tgt, &layers) else {
                 continue;
             };
@@ -177,25 +177,33 @@ pub fn analyze(graph: &IrGraph, config: &BoundaryConfig) -> Vec<Finding> {
                     end_byte: 0,
                     start_line: 1,
                 });
-                findings.push(
-                    Finding::new(
-                        "boundary",
-                        Severity::Warning,
-                        format!(
-                            "layer `{src_layer}` must not import `{tgt_layer}` ({src} -> {tgt})"
-                        ),
-                        span,
-                        Confidence::Certain,
-                    )
-                    .with_related(
-                        tgt_span,
-                        "imported_file",
-                        format!("{tgt} is in layer `{tgt_layer}`"),
-                    )
-                    .with_reason(format!(
-                        "stratify.toml forbids layer `{src_layer}` from importing layer `{tgt_layer}`"
-                    )),
-                );
+                let unconfirmed = *edge_confidence == Confidence::Likely;
+                let (severity, confidence) = if unconfirmed {
+                    (Severity::Info, Confidence::Likely)
+                } else {
+                    (Severity::Warning, Confidence::Certain)
+                };
+                let mut finding = Finding::new(
+                    "boundary",
+                    severity,
+                    format!("layer `{src_layer}` must not import `{tgt_layer}` ({src} -> {tgt})"),
+                    span,
+                    confidence,
+                )
+                .with_related(
+                    tgt_span,
+                    "imported_file",
+                    format!("{tgt} is in layer `{tgt_layer}`"),
+                )
+                .with_reason(format!(
+                    "stratify.toml forbids layer `{src_layer}` from importing layer `{tgt_layer}`"
+                ));
+                if unconfirmed {
+                    finding = finding.with_reason(
+                        "the import lands on a re-exporting module, not the file that defines the item",
+                    );
+                }
+                findings.push(finding);
             }
         }
     }
@@ -205,7 +213,7 @@ pub fn analyze(graph: &IrGraph, config: &BoundaryConfig) -> Vec<Finding> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{add_import, add_ref, add_sym, file_sym};
+    use crate::test_support::{add_import, add_import_at, add_ref, add_sym, file_sym};
     use stratify_core::{RefKind, SymbolKind};
 
     fn config() -> BoundaryConfig {
@@ -364,5 +372,39 @@ mod tests {
         assert!(findings.iter().any(|f| f.rule == "boundary"
             && f.message.contains("models")
             && f.message.contains("controllers")));
+    }
+
+    #[test]
+    fn violation_resting_on_a_likely_edge_reports_info_likely() {
+        let mut g = IrGraph::new();
+        let m = file_sym(&mut g, "models/user.rb");
+        file_sym(&mut g, "controllers/users.rb");
+        add_import_at(
+            &mut g,
+            m,
+            "controllers/users.rb",
+            "models/user.rb",
+            1,
+            Confidence::Likely,
+        );
+        let findings = analyze(&g, &config());
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].severity, Severity::Info);
+        assert_eq!(findings[0].confidence, Confidence::Likely);
+        assert!(findings[0]
+            .reasons
+            .iter()
+            .any(|r| r.contains("re-exporting module")));
+    }
+
+    #[test]
+    fn violation_on_a_certain_edge_stays_warning() {
+        let mut g = IrGraph::new();
+        let m = file_sym(&mut g, "models/user.rb");
+        file_sym(&mut g, "controllers/users.rb");
+        add_import(&mut g, m, "controllers/users.rb");
+        let findings = analyze(&g, &config());
+        assert_eq!(findings[0].severity, Severity::Warning);
+        assert_eq!(findings[0].confidence, Confidence::Certain);
     }
 }

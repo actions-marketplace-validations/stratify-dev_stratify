@@ -1,13 +1,30 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use stratify_core::ir::{Span, SymbolId};
-use stratify_core::{IrGraph, RefKind, SymbolKind};
+use stratify_core::{Confidence, IrGraph, RefKind, SymbolKind};
+
+/// Import adjacency: source node -> target node -> the strongest confidence of
+/// any `Imports` edge between the two.
+pub type ImportGraph = BTreeMap<String, BTreeMap<String, Confidence>>;
+
+/// Record an edge, keeping the strongest confidence seen for the pair.
+fn add_edge(adj: &mut ImportGraph, src: &str, tgt: &str, confidence: Confidence) {
+    let slot = adj
+        .entry(src.to_string())
+        .or_default()
+        .entry(tgt.to_string())
+        .or_insert(confidence);
+    if confidence > *slot {
+        *slot = confidence;
+    }
+}
 
 /// Build the file-level import graph: each file maps to the set of files it
 /// imports. An `Imports` edge (File -> Dependency) resolves to a file edge when
 /// the Dependency's name (import key) equals some File/Class/Module fqn (export
 /// key). Every File symbol appears as a key (possibly with an empty set).
-/// Self-edges are excluded.
-pub fn file_import_graph(graph: &IrGraph) -> BTreeMap<String, BTreeSet<String>> {
+/// Self-edges are excluded. Each edge carries the strongest confidence of the
+/// `Imports` references behind it.
+pub fn file_import_graph(graph: &IrGraph) -> ImportGraph {
     let mut export: HashMap<&str, String> = HashMap::new();
     for s in graph.symbols() {
         if matches!(
@@ -20,7 +37,7 @@ pub fn file_import_graph(graph: &IrGraph) -> BTreeMap<String, BTreeSet<String>> 
         }
     }
 
-    let mut adj: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut adj: ImportGraph = BTreeMap::new();
     for s in graph.symbols() {
         if matches!(s.kind, SymbolKind::File) {
             adj.entry(s.span.file.clone()).or_default();
@@ -37,9 +54,7 @@ pub fn file_import_graph(graph: &IrGraph) -> BTreeMap<String, BTreeSet<String>> 
         let src_file = &from.span.file;
         if let Some(target_file) = export.get(to.name.as_str()) {
             if target_file != src_file {
-                adj.entry(src_file.clone())
-                    .or_default()
-                    .insert(target_file.clone());
+                add_edge(&mut adj, src_file, target_file, r.confidence);
             }
         }
     }
@@ -62,7 +77,7 @@ pub fn file_spans(graph: &IrGraph) -> HashMap<String, Span> {
 /// Like `file_import_graph` but keyed by export-key (fqn) instead of file path.
 /// Files sharing an fqn (e.g. Go package files) collapse into one node. For
 /// languages where fqn is 1:1 with the file, this matches `file_import_graph`.
-pub fn fqn_import_graph(graph: &IrGraph) -> BTreeMap<String, BTreeSet<String>> {
+pub fn fqn_import_graph(graph: &IrGraph) -> ImportGraph {
     // file path -> that file's own fqn (its graph node key).
     let file_fqn_by_path: HashMap<&str, &str> = graph
         .symbols()
@@ -99,7 +114,7 @@ pub fn fqn_import_graph(graph: &IrGraph) -> BTreeMap<String, BTreeSet<String>> {
         .map(|s| (s.id, s.fqn.clone()))
         .collect();
 
-    let mut adj: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut adj: ImportGraph = BTreeMap::new();
     for s in graph.symbols() {
         if matches!(s.kind, SymbolKind::File) {
             adj.entry(s.fqn.clone()).or_default();
@@ -118,9 +133,7 @@ pub fn fqn_import_graph(graph: &IrGraph) -> BTreeMap<String, BTreeSet<String>> {
         };
         if let Some(&owner_fqn) = export.get(to.name.as_str()) {
             if owner_fqn != src_fqn.as_str() {
-                adj.entry(src_fqn.clone())
-                    .or_default()
-                    .insert(owner_fqn.to_string());
+                add_edge(&mut adj, src_fqn, owner_fqn, r.confidence);
             }
         }
     }
@@ -177,8 +190,8 @@ mod tests {
             Some(1),
             "adj: {adj:?}"
         );
-        assert!(adj["pkga/ClassA.java"].contains("pkgb/ClassB.java"));
-        assert!(adj["pkgb/ClassB.java"].contains("pkga/ClassA.java"));
+        assert!(adj["pkga/ClassA.java"].contains_key("pkgb/ClassB.java"));
+        assert!(adj["pkgb/ClassB.java"].contains_key("pkga/ClassA.java"));
     }
 
     #[test]
@@ -191,6 +204,18 @@ mod tests {
         let _ = (a, b);
         add_import(&mut g, a, "b.go");
         let adj = fqn_import_graph(&g);
-        assert!(adj["a.go"].contains("b.go"));
+        assert!(adj["a.go"].contains_key("b.go"));
+    }
+
+    #[test]
+    fn strongest_confidence_wins_per_pair() {
+        use crate::test_support::add_import_at;
+        let mut g = IrGraph::new();
+        let a = file_sym(&mut g, "a.rs");
+        file_sym(&mut g, "b.rs");
+        add_import_at(&mut g, a, "b.rs", "a.rs", 1, Confidence::Likely);
+        add_import_at(&mut g, a, "b.rs", "a.rs", 2, Confidence::Certain);
+        assert_eq!(fqn_import_graph(&g)["a.rs"]["b.rs"], Confidence::Certain);
+        assert_eq!(file_import_graph(&g)["a.rs"]["b.rs"], Confidence::Certain);
     }
 }
