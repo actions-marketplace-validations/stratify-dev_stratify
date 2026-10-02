@@ -123,7 +123,7 @@ Date: 2026-10-02. Follow-up work ran on branch `roadmap-qa-fixes`. Phase 0 stays
 
 - [x] Set the corpus acceptance policy. `5c21b48`, `docs/roadmap-full-stack-static-analysis.md`.
 - [ ] Grow and pin the corpus. Open: only this repo is in the corpus, and `main` is not pushed, so the pin `a809171` is unreachable from the default clone URL.
-- [ ] Label findings completely for any claimed precision. Open: Rust `dead_code` has labels but one repo. Rust `duplication`, `complexity`, `hotspot`, and `cycle` are `incomplete`. 30 pairs have no labels.
+- [ ] Label findings completely for any claimed precision. Open: Rust `dead_code` has labels but one repo. Rust `duplication`, `complexity`, `hotspot`, and `cycle` are `incomplete`. 31 pairs are `no-data`, and 4 more are `incomplete` with no labels, so 35 of 36 pairs have no labels.
 - [x] Validate the precision tool end to end. `5c21b48`. Exit codes are 0, 1, and 2.
 - [x] Report coverage with precision. `5c21b48`. The tool prints counts, repos, coverage, precision, and status per pair, plus a gate-ready footer.
 - [x] Fix and define scan statistics. `2ac3fef`.
@@ -146,8 +146,8 @@ Date: 2026-10-02. Follow-up work ran on branch `roadmap-qa-fixes`. Phase 0 stays
 - [x] Suppression semantics. `e3b033b` and `62b8b87`. `39c2e10` adds a stderr warning for unknown rule ids.
 - [x] Baseline behavior. Shipped in `7d3dfa8`, unchanged this round.
 - [x] GitHub Action. Shipped earlier, unchanged this round. Script tests run in CI.
-- [x] Judge compatibility. `c6aea0b`, `197d25e`, `90d3a73`, `docs/judge-compat.md`. The code never reads the evidence fields, 32 request bodies per variant matched, and three live runs show only model noise.
-- [x] Documentation and release notes. `CHANGELOG.md` Unreleased covers the performance fix, the skip behavior, the unknown-id warning, and the roadmap status.
+- [x] Judge compatibility. `c6aea0b`, `197d25e`, `90d3a73`, `docs/judge-compat.md`. The code never reads the evidence fields, 32 request bodies per variant matched, and three live runs show only model noise. Run 3 had 2 changed rows, which the identical captured requests explain as model nondeterminism.
+- [x] Documentation and release notes. `CHANGELOG.md` Unreleased covers the performance fix, the skip behavior, and the unknown-id warning. The roadmap carries status.
 - [x] Repository workflow. Resolved by the finding 3 note.
 
 ### Sign-off

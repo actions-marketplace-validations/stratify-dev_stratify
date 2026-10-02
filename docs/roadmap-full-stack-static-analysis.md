@@ -77,7 +77,7 @@ Shipped:
 
   `gate-ready: 0 of 36 applicable pairs (0 not applicable). Precision targets apply only to gate-ready pairs.`
 
-  The run used `target/release/stratify` at `90d3a73` against a local clone of this repo, because local `main` is not pushed and the default clone of the corpus URL cannot reach the pinned commit `a809171`. Only Rust `dead_code` has labels: tp 0, fp 15, unlabelled 0, repos 1, coverage 100%, precision 0%, status `insufficient`. Rust `duplication`, `complexity`, `hotspot`, and `cycle` are `incomplete`. Every other pair is `no-data`. The tool measures no pair.
+  The run used `target/release/stratify` at `90d3a73` against a local clone of this repo, because local `main` is not pushed and the default clone of the corpus URL cannot reach the pinned commit `a809171`. Only Rust `dead_code` has labels: tp 0, fp 15, unlabelled 0, repos 1, coverage 100%, precision 0%, status `insufficient`. Rust `duplication`, `complexity`, `hotspot`, and `cycle` are `incomplete`. The other 31 pairs are `no-data`. The tool measures no pair.
 - The benchmark tool, `scripts/bench.py`, and these release rows in `docs/benchmarks.md`, both at `090da17` on Darwin arm64, Apple M5:
   - stratify self: 50 files, 11,984 lines, 0.71 s, 36.2 MB peak RSS.
   - kubernetes v1.31.0 (`9edcffc`): 15,372 files, 4,520,718 lines, 90.27 s, 8,186.5 MB peak RSS. The scan completed.
@@ -86,7 +86,7 @@ Shipped:
 
 Remaining:
 
-- Labelled repos for every applicable pair. Today 0 of 36 are gate-ready, and 30 pairs have no labels at all.
+- Labelled repos for every applicable pair. Today 0 of 36 are gate-ready, 31 pairs are `no-data`, and 4 more are `incomplete` with no labels, so 35 of 36 pairs have no labels.
 - The scan-time budget. The large-repo row now exists. Choosing the budget from it is the owner's decision. This document sets none.
 - Pushing `main`, so the corpus pin `a809171` is reachable from the default clone URL.
 
@@ -119,7 +119,7 @@ Exit:
 
 ## Phase 1: Findings model and adoption basics
 
-Status: shipped: rule registry, evidence fields with the SARIF mapping, comment suppression, and the baseline gate with the hardened Action. SARIF output validates against the official OASIS 2.1.0 schema, and CI runs the check (`3f02fcf`). Unknown rule ids in suppression markers print a warning on stderr (`39c2e10`). The judge-compatibility test passes. `docs/judge-compat.md` records the result: code inspection shows the judge never reads the evidence fields, a request capture showed 32 identical bodies per variant, and three live runs show only model noise (`c6aea0b`, `197d25e`, `90d3a73`).
+Status: shipped: rule registry, evidence fields with the SARIF mapping, comment suppression, and the baseline gate with the hardened Action. SARIF output validates against the official OASIS 2.1.0 schema, and CI runs the check (`3f02fcf`). Unknown rule ids in suppression markers print a warning on stderr (`39c2e10`). The judge-compatibility test passes. `docs/judge-compat.md` records the result: code inspection shows the judge never reads the evidence fields, a request capture showed 32 identical bodies per variant, and three live runs show only model noise. Run 3 had 2 changed rows, which the identical captured requests explain as model nondeterminism (`c6aea0b`, `197d25e`, `90d3a73`).
 
 Objective: give findings enough structure to explain flow results, and give teams a way to adopt a new rule without a wall of old findings.
 
