@@ -1,6 +1,6 @@
 import unittest
 
-from bench import parse_stats, peak_rss_mb
+from bench import build_result, parse_stats, peak_rss_mb, profile_from_path
 
 
 class BenchTest(unittest.TestCase):
@@ -15,6 +15,24 @@ class BenchTest(unittest.TestCase):
     def test_peak_rss_units(self):
         self.assertEqual(peak_rss_mb(512 * 1024 * 1024, "darwin"), 512.0)  # bytes on macOS
         self.assertEqual(peak_rss_mb(512 * 1024, "linux"), 512.0)          # KiB on Linux
+
+    def test_profile_from_binary_path(self):
+        self.assertEqual(profile_from_path("target/release/stratify", None), "release")
+        self.assertEqual(profile_from_path("/x/target/debug/stratify", None), "debug")
+        self.assertEqual(profile_from_path("/usr/local/bin/stratify", None), "unknown")
+
+    def test_profile_override_wins(self):
+        self.assertEqual(profile_from_path("/usr/local/bin/stratify", "release"), "release")
+
+    def test_build_result_records_provenance(self):
+        stats = {"files_scanned": 2, "lines_scanned": 9, "functions": 3}
+        result = build_result(stats, 1.234, 512.0, "abc1234", "release", "demo v1")
+        self.assertEqual(result["stratify_commit"], "abc1234")
+        self.assertEqual(result["profile"], "release")
+        self.assertEqual(result["repo"], "demo v1")
+        self.assertIs(result["completed"], True)
+        self.assertEqual(result["wall_s"], 1.23)
+        self.assertEqual(result["lines"], 9)
 
 
 if __name__ == "__main__":
