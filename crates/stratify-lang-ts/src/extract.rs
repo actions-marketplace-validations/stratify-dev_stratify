@@ -368,7 +368,7 @@ pub(crate) fn extract(file: &str, src: &str) -> IrGraph {
 
     let file_id = add_file_symbol(&mut g, file, root);
     tokenize(&mut g, root, src, file, &normalize_rules());
-    collect_suppressions(&mut g, root, src, file, &["comment"]);
+    collect_suppressions(&mut g, root, src, file, &["comment"], &[], &[]);
     extract_declarations(&mut g, &lang, root, src, file, file_id);
     extract_imports(&mut g, &lang, root, src, file, file_id);
     extract_calls(&mut g, &lang, root, src, file, file_id);

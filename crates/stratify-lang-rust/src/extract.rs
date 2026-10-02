@@ -511,7 +511,15 @@ pub(crate) fn extract(file: &str, src: &str) -> IrGraph {
     });
 
     walk::tokenize(&mut g, root, src, file, &NORMALIZE_RULES);
-    walk::collect_suppressions(&mut g, root, src, file, &["line_comment", "block_comment"]);
+    walk::collect_suppressions(
+        &mut g,
+        root,
+        src,
+        file,
+        &["line_comment", "block_comment"],
+        &["attribute_item"],
+        &[],
+    );
 
     extract_imports(&mut g, &lang, root, src, file, file_id);
 
@@ -930,6 +938,32 @@ fn m(x: i32) -> i32 {
                 (1, 1, vec!["dead_code".to_string()]),
                 (4, 4, vec!["duplication".to_string()])
             ]
+        );
+    }
+
+    fn suppression_spans(src: &str) -> Vec<(usize, usize, Vec<String>)> {
+        extract("src/x.rs", src)
+            .suppressions()
+            .iter()
+            .map(|s| (s.start_line, s.end_line, s.rules.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn suppression_covers_attributes_below_the_marker() {
+        let src = "// stratify-ignore: dead_code\n#[inline]\n#[allow(unused)]\nfn f() {}\n";
+        assert_eq!(
+            suppression_spans(src),
+            vec![(1, 3, vec!["dead_code".to_string()])]
+        );
+    }
+
+    #[test]
+    fn suppression_does_not_reach_across_a_blank_line() {
+        let src = "// stratify-ignore: dead_code\n\n#[inline]\nfn f() {}\n";
+        assert_eq!(
+            suppression_spans(src),
+            vec![(1, 1, vec!["dead_code".to_string()])]
         );
     }
 }

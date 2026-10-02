@@ -396,7 +396,15 @@ pub(crate) fn extract(file: &str, src: &str) -> IrGraph {
     g.mark_entrypoint(file_id);
 
     walk::tokenize(&mut g, root, src, file, &NORMALIZE_RULES);
-    walk::collect_suppressions(&mut g, root, src, file, &["comment"]);
+    walk::collect_suppressions(
+        &mut g,
+        root,
+        src,
+        file,
+        &["comment"],
+        &[],
+        &[("decorated_definition", "definition")],
+    );
 
     extract_definitions(&mut g, file, src, root, file_id);
     extract_calls(&mut g, file, src, root, file_id);
@@ -624,5 +632,17 @@ mod tests {
             .map(|s| (s.start_line, s.end_line, s.rules.clone()))
             .collect();
         assert_eq!(got, vec![(1, 1, vec!["dead_code".to_string()])]);
+    }
+
+    #[test]
+    fn suppression_covers_decorators_below_the_marker() {
+        let src = "# stratify-ignore: dead_code\n@app.route('/')\n@login_required\ndef handler():\n    pass\n";
+        let g = extract("x.py", src);
+        let got: Vec<(usize, usize, Vec<String>)> = g
+            .suppressions()
+            .iter()
+            .map(|s| (s.start_line, s.end_line, s.rules.clone()))
+            .collect();
+        assert_eq!(got, vec![(1, 3, vec!["dead_code".to_string()])]);
     }
 }

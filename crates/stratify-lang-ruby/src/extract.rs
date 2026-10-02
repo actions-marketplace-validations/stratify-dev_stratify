@@ -370,7 +370,7 @@ pub(crate) fn extract(file: &str, src: &str) -> IrGraph {
     });
 
     walk::tokenize(&mut g, root, src, file, &normalize_rules());
-    walk::collect_suppressions(&mut g, root, src, file, &["comment"]);
+    walk::collect_suppressions(&mut g, root, src, file, &["comment"], &[], &[]);
 
     extract_declarations(&mut g, root, src, file, file_id);
 

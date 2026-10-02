@@ -178,12 +178,23 @@ fn is_rule_id(word: &str) -> bool {
 /// Record a Suppression for each comment node (matched by grammar kind)
 /// whose text carries a marker, in source order. String literals are never
 /// comment nodes, so a marker inside a string is ignored.
+///
+/// A marker above an attribute or decorator must still reach the item below,
+/// whose own span starts after that prelude. So the recorded range extends
+/// through the contiguous siblings that follow the comment:
+/// - `prelude_kinds`: sibling kinds that belong to the item (Rust
+///   `attribute_item`). The range ends at the last such sibling.
+/// - `wrapper_kinds`: (wrapper kind, field name of the wrapped definition)
+///   pairs (Python `decorated_definition`, `definition`). The range ends on the
+///   line before the wrapped definition starts.
 pub fn collect_suppressions(
     graph: &mut IrGraph,
     root: Node,
     src: &str,
     file: &str,
     comment_kinds: &[&str],
+    prelude_kinds: &[&str],
+    wrapper_kinds: &[(&str, &str)],
 ) {
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
@@ -192,13 +203,28 @@ pub fn collect_suppressions(
             if !rules.is_empty() {
                 let start = node.start_position();
                 let end = node.end_position();
-                // A comment that swallows its newline ends at column 0 of the
-                // next row. It still belongs to the row before.
-                let end_row = if end.column == 0 && end.row > start.row {
-                    end.row - 1
-                } else {
-                    end.row
-                };
+                let mut end_row = normalized_end_row(start, end);
+                let mut sibling = node.next_named_sibling();
+                while let Some(sib) = sibling {
+                    // Only a prelude that touches the marker belongs to it.
+                    if sib.start_position().row > end_row + 1 {
+                        break;
+                    }
+                    if prelude_kinds.contains(&sib.kind()) {
+                        end_row = end_row
+                            .max(normalized_end_row(sib.start_position(), sib.end_position()));
+                    } else if let Some((_, field)) =
+                        wrapper_kinds.iter().find(|(kind, _)| *kind == sib.kind())
+                    {
+                        if let Some(def) = sib.child_by_field_name(field) {
+                            end_row = end_row.max(def.start_position().row.saturating_sub(1));
+                        }
+                        break;
+                    } else {
+                        break;
+                    }
+                    sibling = sib.next_named_sibling();
+                }
                 graph.add_suppression(Suppression {
                     file: file.to_string(),
                     start_line: start.row + 1,
@@ -213,6 +239,16 @@ pub fn collect_suppressions(
         for child in children.into_iter().rev() {
             stack.push(child);
         }
+    }
+}
+
+/// Last row a node occupies. A node that swallows its newline ends at column 0
+/// of the next row. It still belongs to the row before.
+fn normalized_end_row(start: tree_sitter::Point, end: tree_sitter::Point) -> usize {
+    if end.column == 0 && end.row > start.row {
+        end.row - 1
+    } else {
+        end.row
     }
 }
 
@@ -256,7 +292,15 @@ mod tests {
         let src = "package a\n// stratify-ignore: dead_code\nfunc a() {}\nvar s = \"stratify-ignore: complexity\"\n/* stratify-ignore: duplication\n */\nfunc c() {}\n";
         let tree = parse_go(src);
         let mut g = IrGraph::new();
-        collect_suppressions(&mut g, tree.root_node(), src, "a.go", &["comment"]);
+        collect_suppressions(
+            &mut g,
+            tree.root_node(),
+            src,
+            "a.go",
+            &["comment"],
+            &[],
+            &[],
+        );
         let got: Vec<(usize, usize, Vec<String>)> = g
             .suppressions()
             .iter()
