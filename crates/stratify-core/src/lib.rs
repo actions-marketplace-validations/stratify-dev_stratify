@@ -2,6 +2,7 @@ pub mod confidence;
 pub mod finding;
 pub mod graph;
 pub mod ir;
+pub mod rule;
 
 pub use confidence::Confidence;
 pub use finding::{Finding, Report, Severity};

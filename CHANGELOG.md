@@ -13,6 +13,9 @@ backward-compatible).
 - Dependency cycles and layer boundaries for Rust. Every language now gets
   all six analyses. Imports resolve through `crate::`, `self::`, `super::`,
   and crate names read from each `Cargo.toml` in the scan.
+- A rule registry: each rule carries a name, category, default severity,
+  tags, and fix guidance. SARIF output now includes `help` text,
+  `defaultConfiguration`, and tags for every rule.
 
 ### Changed
 - The Rust adapter records `use` declarations as imports, and a Rust file's

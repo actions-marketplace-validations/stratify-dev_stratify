@@ -15,15 +15,39 @@ fn level_of(sev: Severity) -> &'static str {
     }
 }
 
-fn rule_description(rule: &str) -> &'static str {
-    match rule {
-        "dead_code" => "Unused code: functions never reached from an entrypoint.",
-        "duplication" => "Duplicated code blocks.",
-        "complexity" => "Functions with high cyclomatic complexity.",
-        "hotspot" => "Complex code that also changes frequently.",
-        "cycle" => "Circular dependencies between files.",
-        "boundary" => "Imports that violate configured layer boundaries.",
-        _ => "Stratify finding.",
+fn sarif_rule(id: &str) -> SarifRule {
+    match stratify_core::rule::rule(id) {
+        Some(m) => SarifRule {
+            id: id.to_string(),
+            name: m.name.to_string(),
+            short_description: Text {
+                text: m.description.to_string(),
+            },
+            full_description: Some(Text {
+                text: m.description.to_string(),
+            }),
+            help: Some(Text {
+                text: m.remediation.to_string(),
+            }),
+            default_configuration: Some(DefaultConfiguration {
+                level: level_of(m.default_severity),
+            }),
+            properties: Some(RuleProperties {
+                category: m.category,
+                tags: m.tags.to_vec(),
+            }),
+        },
+        None => SarifRule {
+            id: id.to_string(),
+            name: id.to_string(),
+            short_description: Text {
+                text: "Stratify finding.".to_string(),
+            },
+            full_description: None,
+            help: None,
+            default_configuration: None,
+            properties: None,
+        },
     }
 }
 
@@ -35,16 +59,7 @@ fn build(report: &Report) -> Sarif {
             seen.push(f.rule.clone());
         }
     }
-    let rules = seen
-        .iter()
-        .map(|id| RuleMeta {
-            id: id.clone(),
-            name: id.clone(),
-            short_description: Text {
-                text: rule_description(id).to_string(),
-            },
-        })
-        .collect();
+    let rules = seen.iter().map(|id| sarif_rule(id)).collect();
 
     let results = report
         .findings
@@ -110,15 +125,37 @@ struct Driver {
     #[serde(rename = "informationUri")]
     information_uri: &'static str,
     version: &'static str,
-    rules: Vec<RuleMeta>,
+    rules: Vec<SarifRule>,
 }
 
 #[derive(Serialize)]
-struct RuleMeta {
+struct SarifRule {
     id: String,
     name: String,
     #[serde(rename = "shortDescription")]
     short_description: Text,
+    #[serde(rename = "fullDescription", skip_serializing_if = "Option::is_none")]
+    full_description: Option<Text>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    help: Option<Text>,
+    #[serde(
+        rename = "defaultConfiguration",
+        skip_serializing_if = "Option::is_none"
+    )]
+    default_configuration: Option<DefaultConfiguration>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    properties: Option<RuleProperties>,
+}
+
+#[derive(Serialize)]
+struct DefaultConfiguration {
+    level: &'static str,
+}
+
+#[derive(Serialize)]
+struct RuleProperties {
+    category: &'static str,
+    tags: Vec<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -240,5 +277,29 @@ mod tests {
             1
         );
         assert_eq!(v["runs"][0]["results"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn driver_rules_carry_registry_metadata() {
+        let report = Report::new(vec![finding("cycle", Severity::Warning, "a.rb", 1)]);
+        let v: serde_json::Value = serde_json::from_str(&render(&report)).unwrap();
+        let r = &v["runs"][0]["tool"]["driver"]["rules"][0];
+        assert_eq!(r["id"], "cycle");
+        assert_eq!(r["name"], "Dependency cycle");
+        assert!(r["help"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Break the cycle"));
+        assert_eq!(r["properties"]["category"], "architecture");
+        assert_eq!(r["defaultConfiguration"]["level"], "warning");
+    }
+
+    #[test]
+    fn unknown_rule_still_renders() {
+        let report = Report::new(vec![finding("custom", Severity::Info, "a.rb", 1)]);
+        let v: serde_json::Value = serde_json::from_str(&render(&report)).unwrap();
+        let r = &v["runs"][0]["tool"]["driver"]["rules"][0];
+        assert_eq!(r["id"], "custom");
+        assert_eq!(r["shortDescription"]["text"], "Stratify finding.");
     }
 }
