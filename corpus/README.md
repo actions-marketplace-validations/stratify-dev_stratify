@@ -9,6 +9,8 @@ one row per rule and language.
 
 ## Files
 
+- `applicability.json`: `not_applicable`, a list of rule and language pairs
+  with a `reason` (the product reason) and `reviewed_by` (who agreed).
 - `repos.json`: name, clone URL, pinned commit.
 - `labels/<name>.json`: `repo`, `complete_rules` (rules labelled
   exhaustively in this repo), and `labels`, one per finding: `rule`, `file`,
@@ -37,6 +39,33 @@ the labels come from 2 or more repos, and 30 or more findings are labelled.
 The roadmap's precision targets apply only to gate-ready pairs. Every other
 pair reports `no-data`, `incomplete`, or `insufficient`, and its precision
 number is a sample, not a measurement.
+
+## Applicability
+
+A pair (rule, language) is applicable unless `applicability.json` lists it
+with a `reason` and a `reviewed_by`. Today all 36 pairs are applicable, so
+the file reads `{"not_applicable": []}`.
+
+- A listed pair reports `not-applicable`.
+- A listed pair that has corpus findings is a validation error. Findings
+  prove the rule applies.
+- The bar stays at 2 repos and 30 labelled findings. Nobody lowers it to
+  make the Phase 0 exit pass.
+- Synthetic fixtures never count as corpus evidence.
+
+The footer reads `gate-ready: N of M applicable pairs (K not applicable).`
+
+## Evidence plan for sparse rules
+
+`cycle` and `boundary` produce few findings on ordinary repos. Plan their
+evidence on purpose:
+
+- `cycle`: pick corpus repos known to carry real import cycles, in each
+  language.
+- `boundary`: pick repos with a real layer config. That means a
+  `stratify.toml`, a Rails app, or a Maven layered app.
+- Label these rules exhaustively in those repos and list them in
+  `complete_rules`.
 
 ## Coverage
 

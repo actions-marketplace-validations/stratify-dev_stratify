@@ -1,6 +1,18 @@
+import json
+import os
+import stat
+import subprocess
+import sys
+import tempfile
 import unittest
+from pathlib import Path
 
-from precision import classify, label_matches, language_of, summarize, validate_labels
+from precision import (
+    classify, label_matches, language_of, not_applicable_findings, summarize,
+    validate_applicability, validate_labels,
+)
+
+PRECISION = Path(__file__).resolve().parent / "precision.py"
 
 
 def finding(rule, file, line, message):
@@ -64,6 +76,61 @@ class Validation(unittest.TestCase):
         self.assertEqual(sorted(o for _, _, o in outcomes), ["tp", "unlabelled"])
 
 
+class SchemaHardening(unittest.TestCase):
+    def test_missing_or_non_list_labels(self):
+        self.assertTrue(any("labels must be a list" in e for e in validate_labels({"complete_rules": []})))
+        self.assertTrue(any("labels must be a list" in e for e in validate_labels({"complete_rules": [], "labels": {}})))
+
+    def test_non_object_label(self):
+        errors = validate_labels({"complete_rules": [], "labels": ["x", 3, None]})
+        self.assertEqual(len([e for e in errors if "must be an object" in e]), 3, errors)
+
+    def test_non_object_document(self):
+        self.assertTrue(validate_labels([]))
+
+
+class Applicability(unittest.TestCase):
+    def entry(self, **kw):
+        return {"rule": "cycle", "language": "go", "reason": "r", "reviewed_by": "who", **kw}
+
+    def test_valid_and_empty(self):
+        self.assertEqual(validate_applicability({"not_applicable": []}), ([], set()))
+        errors, pairs = validate_applicability({"not_applicable": [self.entry()]})
+        self.assertEqual((errors, pairs), ([], {("cycle", "go")}))
+
+    def test_entry_errors(self):
+        for bad, text in [
+            (self.entry(rule="nope"), "unknown rule"),
+            (self.entry(language="cobol"), "unknown language"),
+            (self.entry(reason=""), "reason"),
+            (self.entry(reviewed_by="  "), "reviewed_by"),
+            (self.entry(reason=None), "reason"),
+            ("x", "must be an object"),
+        ]:
+            errors, _ = validate_applicability({"not_applicable": [bad]})
+            self.assertTrue(any(text in e for e in errors), (bad, errors))
+
+    def test_document_shape(self):
+        self.assertTrue(validate_applicability({})[0])
+        self.assertTrue(validate_applicability({"not_applicable": {}})[0])
+
+    def test_duplicate_entry(self):
+        errors, _ = validate_applicability({"not_applicable": [self.entry(), self.entry()]})
+        self.assertTrue(any("duplicate" in e for e in errors), errors)
+
+    def test_listed_pair_with_findings_is_an_error(self):
+        errors = not_applicable_findings({("cycle", "go")}, {"r": [("cycle", "go", "unlabelled")]})
+        self.assertEqual(len(errors), 1)
+        self.assertIn("cycle", errors[0])
+        self.assertEqual(not_applicable_findings({("cycle", "go")}, {"r": [("cycle", "rust", "tp")]}), [])
+
+    def test_status_not_applicable(self):
+        rows = summarize({}, {("cycle", "go")})
+        row = next(r for r in rows if r["rule"] == "cycle" and r["language"] == "go")
+        self.assertEqual(row["status"], "not-applicable")
+        self.assertEqual(next(r for r in rows if r["rule"] == "cycle" and r["language"] == "rust")["status"], "no-data")
+
+
 class Summary(unittest.TestCase):
     def row(self, rows, rule, lang):
         return next(r for r in rows if r["rule"] == rule and r["language"] == lang)
@@ -82,6 +149,110 @@ class Summary(unittest.TestCase):
         cyc = self.row(rows, "cycle", "rust")
         self.assertEqual((cyc["status"], cyc["coverage"]), ("incomplete", 0.5))
         self.assertEqual(self.row(rows, "complexity", "go")["status"], "insufficient")
+
+
+FAKE_REPORT = {"findings": [
+    {"rule": "dead_code", "message": "unused function `foo`", "span": {"file": "a.rs", "start_line": 1}},
+]}
+
+
+class EndToEnd(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+        self.source = self.dir / "source"
+        self.source.mkdir()
+        git = ["git", "-C", str(self.source), "-c", "user.name=t", "-c", "user.email=t@t"]
+        subprocess.run(["git", "init", "--quiet", str(self.source)], check=True)
+        (self.source / "a.rs").write_text("fn foo() {}\n")
+        subprocess.run(git + ["add", "."], check=True)
+        subprocess.run(git + ["commit", "--quiet", "-m", "init"], check=True)
+        self.commit = subprocess.run(
+            ["git", "-C", str(self.source), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+        ).stdout.strip()
+        self.corpus = self.dir / "corpus"
+        (self.corpus / "labels").mkdir(parents=True)
+        (self.corpus / "applicability.json").write_text('{"not_applicable": []}')
+        self.write_corpus(str(self.source), [label("dead_code", "a.rs", 1, "foo", "fp")])
+
+    def write_corpus(self, url, labels):
+        (self.corpus / "repos.json").write_text(json.dumps([{"name": "r", "url": url, "commit": self.commit}]))
+        (self.corpus / "labels" / "r.json").write_text(
+            json.dumps({"repo": "r", "complete_rules": ["dead_code"], "labels": labels}))
+
+    def fake(self, body, code=0):
+        path = self.dir / "fake-stratify"
+        path.write_text(f"#!{sys.executable}\nimport sys\nprint({body!r})\nsys.exit({code})\n")
+        path.chmod(path.stat().st_mode | stat.S_IEXEC)
+        return path
+
+    def run_tool(self, fake, *extra):
+        return subprocess.run(
+            [sys.executable, str(PRECISION), "--stratify", str(fake), "--corpus", str(self.corpus),
+             "--work", str(self.dir / "work"), *extra],
+            capture_output=True, text=True)
+
+    def test_valid_corpus_exits_zero(self):
+        proc = self.run_tool(self.fake(json.dumps(FAKE_REPORT)))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("gate-ready: 0 of 36 applicable pairs (0 not applicable).", proc.stdout)
+
+    def test_stale_label_exits_two(self):
+        self.write_corpus(str(self.source), [label("dead_code", "a.rs", 9, "gone")])
+        proc = self.run_tool(self.fake(json.dumps(FAKE_REPORT)))
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertIn("stale", proc.stderr)
+
+    def test_failing_binary_exits_one(self):
+        proc = self.run_tool(self.fake("{}", code=3))
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("precision:", proc.stderr)
+        self.assertNotIn("Traceback", proc.stderr)
+
+    def test_invalid_json_exits_one(self):
+        proc = self.run_tool(self.fake("not json"))
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("precision:", proc.stderr)
+        self.assertNotIn("Traceback", proc.stderr)
+
+    def test_unclonable_url_exits_one(self):
+        self.write_corpus(str(self.dir / "missing"), [])
+        proc = self.run_tool(self.fake(json.dumps(FAKE_REPORT)))
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("precision:", proc.stderr)
+
+    def test_missing_labels_file_exits_one(self):
+        (self.corpus / "labels" / "r.json").unlink()
+        proc = self.run_tool(self.fake(json.dumps(FAKE_REPORT)))
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("precision:", proc.stderr)
+        self.assertNotIn("Traceback", proc.stderr)
+
+    def test_schema_errors_survive_a_later_clone_failure(self):
+        (self.corpus / "repos.json").write_text(json.dumps([
+            {"name": "r", "url": str(self.source), "commit": self.commit},
+            {"name": "s", "url": str(self.dir / "missing"), "commit": self.commit},
+        ]))
+        (self.corpus / "labels" / "r.json").write_text(json.dumps({"complete_rules": [], "labels": ["x"]}))
+        (self.corpus / "labels" / "s.json").write_text(json.dumps({"complete_rules": [], "labels": []}))
+        proc = self.run_tool(self.fake(json.dumps(FAKE_REPORT)))
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("must be an object", proc.stderr)
+
+    def test_not_applicable_pair_with_findings_exits_two(self):
+        (self.corpus / "applicability.json").write_text(json.dumps({"not_applicable": [
+            {"rule": "dead_code", "language": "rust", "reason": "r", "reviewed_by": "w"}]}))
+        proc = self.run_tool(self.fake(json.dumps(FAKE_REPORT)))
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+
+    def test_not_applicable_footer(self):
+        (self.corpus / "applicability.json").write_text(json.dumps({"not_applicable": [
+            {"rule": "cycle", "language": "go", "reason": "r", "reviewed_by": "w"}]}))
+        proc = self.run_tool(self.fake(json.dumps(FAKE_REPORT)))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("gate-ready: 0 of 35 applicable pairs (1 not applicable).", proc.stdout)
+        self.assertIn("not-applicable", proc.stdout)
 
 
 if __name__ == "__main__":

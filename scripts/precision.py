@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Measure Stratify precision per rule and language against the labelled corpus.
 
-Usage: python3 scripts/precision.py --stratify target/release/stratify [--work DIR] [--json]
+Usage: python3 scripts/precision.py --stratify target/release/stratify [--work DIR] [--corpus DIR] [--json]
 
-For each repo in corpus/repos.json: clone it into the work dir (once), check out
-the pinned commit, scan it, and match findings to corpus/labels/<name>.json.
+For each repo in <corpus>/repos.json: clone it into the work dir (once), check out
+the pinned commit, scan it, and match findings to <corpus>/labels/<name>.json.
 Precision counts labelled findings only; coverage shows how much of a rule and
 language pair is labelled. Precision targets apply only to gate-ready pairs.
+Pairs listed in <corpus>/applicability.json report not-applicable.
 
 Exit codes: 0 valid corpus, 1 clone/checkout/scan failure, 2 label errors.
 """
@@ -46,13 +47,22 @@ def label_matches(label, finding):
 
 def validate_labels(doc):
     """Schema errors in one labels document, as strings."""
+    if not isinstance(doc, dict):
+        return ["labels document must be an object"]
     errors = []
     complete = doc.get("complete_rules")
     if not isinstance(complete, list):
         errors.append("complete_rules must be a list")
     else:
         errors += [f"unknown rule in complete_rules: {r}" for r in complete if r not in RULES]
-    for i, lab in enumerate(doc.get("labels", [])):
+    labels = doc.get("labels")
+    if not isinstance(labels, list):
+        errors.append("labels must be a list")
+        labels = []
+    for i, lab in enumerate(labels):
+        if not isinstance(lab, dict):
+            errors.append(f"label {i}: must be an object")
+            continue
         missing = [k for k in LABEL_FIELDS if k not in lab]
         if missing:
             errors.append(f"label {i}: missing {', '.join(missing)}")
@@ -63,6 +73,45 @@ def validate_labels(doc):
             errors.append(f"label {i}: line must be an integer")
         if lab["label"] not in ("tp", "fp"):
             errors.append(f"label {i}: label must be tp or fp")
+    return errors
+
+
+def validate_applicability(doc):
+    """Returns (errors, {(rule, language)}) for an applicability document."""
+    if not isinstance(doc, dict) or not isinstance(doc.get("not_applicable"), list):
+        return ["applicability.json must be an object with a not_applicable list"], set()
+    errors, pairs = [], set()
+    for i, entry in enumerate(doc["not_applicable"]):
+        if not isinstance(entry, dict):
+            errors.append(f"applicability entry {i}: must be an object")
+            continue
+        rule, lang = entry.get("rule"), entry.get("language")
+        ok = True
+        if rule not in RULES:
+            errors.append(f"applicability entry {i}: unknown rule {rule}")
+            ok = False
+        if lang not in LANGUAGES:
+            errors.append(f"applicability entry {i}: unknown language {lang}")
+            ok = False
+        for key in ("reason", "reviewed_by"):
+            value = entry.get(key)
+            if not isinstance(value, str) or not value.strip():
+                errors.append(f"applicability entry {i}: {key} must be a non-empty string")
+        if ok:
+            if (rule, lang) in pairs:
+                errors.append(f"applicability entry {i}: duplicate pair {rule} {lang}")
+            pairs.add((rule, lang))
+    return errors, pairs
+
+
+def not_applicable_findings(pairs, per_repo):
+    """A listed pair with corpus findings is an error: findings prove the rule applies."""
+    errors = []
+    for repo, outcomes in per_repo.items():
+        for rule, lang in sorted(pairs):
+            n = sum(1 for r, l, _ in outcomes if r == rule and l == lang)
+            if n:
+                errors.append(f"{repo}: {n} finding(s) for {rule} {lang}, which applicability.json lists as not applicable")
     return errors
 
 
@@ -95,7 +144,7 @@ def classify(findings, doc, repo):
     return outcomes, errors
 
 
-def summarize(per_repo):
+def summarize(per_repo, not_applicable=frozenset()):
     """per_repo: {repo: [(rule, language, outcome)]}. One row per rule x language."""
     rows = []
     for rule in RULES:
@@ -110,7 +159,9 @@ def summarize(per_repo):
                             repos.add(repo)
             labelled = counts["tp"] + counts["fp"]
             total = labelled + counts["unlabelled"]
-            if total == 0:
+            if (rule, lang) in not_applicable:
+                status = "not-applicable"
+            elif total == 0:
                 status = "no-data"
             elif counts["unlabelled"]:
                 status = "incomplete"
@@ -143,40 +194,58 @@ def checkout(repo, work):
     return dest
 
 
+def load_json(path):
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError) as e:
+        raise CorpusError(f"cannot read {path}: {e}")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--stratify", required=True)
     parser.add_argument("--work", default=str(ROOT / "target" / "corpus"))
+    parser.add_argument("--corpus", default=str(ROOT / "corpus"))
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
-    work = Path(args.work)
+    work, corpus = Path(args.work), Path(args.corpus)
     work.mkdir(parents=True, exist_ok=True)
-    repos = json.loads((ROOT / "corpus" / "repos.json").read_text())
-    per_repo, errors = {}, []
+    per_repo, errors, na_pairs = {}, [], set()
     try:
-        for repo in repos:
-            doc = json.loads((ROOT / "corpus" / "labels" / f"{repo['name']}.json").read_text())
+        na_errors, na_pairs = validate_applicability(load_json(corpus / "applicability.json"))
+        errors += na_errors
+        for repo in load_json(corpus / "repos.json"):
+            doc = load_json(corpus / "labels" / f"{repo['name']}.json")
             schema = validate_labels(doc)
             if schema:
                 errors += [f"{repo['name']}: {e}" for e in schema]
                 continue
             out = run([args.stratify, "check", str(checkout(repo, work)), "--format", "json"])
-            outcomes, errs = classify(json.loads(out)["findings"], doc, repo["name"])
+            try:
+                findings = json.loads(out)["findings"]
+            except (ValueError, KeyError, TypeError) as e:
+                raise CorpusError(f"{repo['name']}: scan output is not a valid report: {e}")
+            outcomes, errs = classify(findings, doc, repo["name"])
             per_repo[repo["name"]] = outcomes
             errors += errs
     except CorpusError as e:
-        print(f"precision: {e}", file=sys.stderr)
+        errors.append(str(e))
+        for msg in errors:
+            print(f"precision: {msg}", file=sys.stderr)
         sys.exit(1)
+    errors += not_applicable_findings(na_pairs, per_repo)
     if errors:
         for e in errors:
             print(f"precision: {e}", file=sys.stderr)
         sys.exit(2)
 
-    rows = summarize(per_repo)
+    rows = summarize(per_repo, na_pairs)
     ready = sum(r["status"] == "gate-ready" for r in rows)
+    applicable = len(rows) - len(na_pairs)
     if args.json:
-        json.dump({"rows": rows, "gate_ready": ready, "pairs": len(rows)}, sys.stdout, indent=2)
+        json.dump({"rows": rows, "gate_ready": ready, "pairs": len(rows),
+                   "applicable": applicable, "not_applicable": len(na_pairs)}, sys.stdout, indent=2)
         print()
         return
     print(f"{'rule':<12} {'language':<11} {'tp':>4} {'fp':>4} {'unlab':>6} {'repos':>5} {'coverage':>8} {'precision':>9}  status")
@@ -185,7 +254,7 @@ def main():
         prec = "n/a" if r["precision"] is None else f"{r['precision']:.0%}"
         print(f"{r['rule']:<12} {r['language']:<11} {r['tp']:>4} {r['fp']:>4} {r['unlabelled']:>6} "
               f"{r['repos']:>5} {cov:>8} {prec:>9}  {r['status']}")
-    print(f"\ngate-ready: {ready} of {len(rows)} rule-language pairs. "
+    print(f"\ngate-ready: {ready} of {applicable} applicable pairs ({len(na_pairs)} not applicable). "
           "Precision targets apply only to gate-ready pairs.")
 
 

@@ -87,7 +87,7 @@ Work:
 
 1. Add Rust `use` and `mod` resolution so Rust gets cycles and layer boundaries. The README already promises this.
 2. Commit a labelled corpus: real repos per language, each finding marked true or false. The August tool-comparison fixtures were never committed. Start from them.
-3. Add a script that compares a scan against the labels and validates the labels. It rejects stale, ambiguous and duplicate labels, and unlabelled findings of a rule declared fully labelled. It reports precision, coverage and status for every rule-language pair.
+3. Add a script that compares a scan against the labels and validates the labels. It rejects stale, ambiguous and duplicate labels, malformed label files, and unlabelled findings of a rule declared fully labelled. It reports precision, coverage and status for every rule-language pair, and marks pairs listed in `corpus/applicability.json` as `not-applicable`.
 4. Record scan time and peak memory on one repo above 500k lines. Use the file and line counts Stratify reports scanning.
 
 A rule-language pair is gate-ready when three conditions hold:
@@ -98,10 +98,14 @@ A rule-language pair is gate-ready when three conditions hold:
 
 Precision counts labelled findings only. A pair that is not gate-ready reports a sample, not a measurement. Every precision target in this roadmap applies to gate-ready pairs only.
 
+A pair is applicable unless `corpus/applicability.json` lists it with a product reason and a reviewer. The tool reports a listed pair as `not-applicable`. A listed pair with corpus findings is a validation error. The bar of 2 repos and 30 labelled findings is never lowered, and synthetic fixtures never count as corpus evidence.
+
 Exit:
 
 - Rust gets six of six analyses.
-- All 36 rule-language pairs are gate-ready, each with a precision number.
+- Every applicable rule-language pair is gate-ready, each with a precision number.
+- Every not-applicable pair carries a reviewed reason in `corpus/applicability.json`.
+- The Phase 0 status lists every unmeasured pair explicitly.
 - A scan-time and memory baseline exists for one repo above 500k lines.
 
 ## Phase 1: Findings model and adoption basics
