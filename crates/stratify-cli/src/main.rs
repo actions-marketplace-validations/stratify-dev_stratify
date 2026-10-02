@@ -116,6 +116,7 @@ fn main() -> ExitCode {
                     serde_json::json!({
                         "files_scanned": stats.files_scanned,
                         "lines_scanned": stats.lines_scanned,
+                        "files_skipped": stats.files_skipped,
                         "functions": stats.functions,
                         "languages": stats.languages,
                         "duration_ms": stats.duration_ms,

@@ -32,6 +32,8 @@ pub enum Format {
 pub struct ScanStats {
     pub files_scanned: u64,
     pub lines_scanned: u64,
+    /// Source files an adapter handles but that could not be read or parsed.
+    pub files_skipped: u64,
     pub functions: u64,
     pub complexity_max: u32,
     pub complexity_mean: f64,
@@ -80,6 +82,7 @@ pub fn scan_stats(graph: &IrGraph, duration_ms: u64, lines_scanned: u64) -> Scan
     ScanStats {
         files_scanned,
         lines_scanned,
+        files_skipped: 0,
         functions,
         complexity_max,
         complexity_mean,
@@ -112,6 +115,7 @@ pub fn analyze_repo_with_stats(root: &Path) -> std::io::Result<(Report, ScanStat
     let mut graph = IrGraph::new();
     let mut rust_crates: Vec<stratify_analysis::resolve::RustCrate> = Vec::new();
     let mut lines_scanned: u64 = 0;
+    let mut files_skipped: u64 = 0;
     for entry in WalkBuilder::new(root).build() {
         let entry = match entry {
             Ok(e) => e,
@@ -142,7 +146,6 @@ pub fn analyze_repo_with_stats(root: &Path) -> std::io::Result<(Report, ScanStat
             Some(a) => a,
             None => continue,
         };
-        let source = std::fs::read_to_string(path)?;
         let rel = path
             .strip_prefix(root)
             .unwrap_or(path)
@@ -151,9 +154,23 @@ pub fn analyze_repo_with_stats(root: &Path) -> std::io::Result<(Report, ScanStat
         if ignore_globs.is_match(&rel) {
             continue;
         }
-        lines_scanned += source.lines().count() as u64;
-        if let Ok(file_graph) = adapter.parse_file(&rel, &source) {
-            graph.merge(file_graph);
+        let source = match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("stratify: skipped {rel}: {e}");
+                files_skipped += 1;
+                continue;
+            }
+        };
+        match adapter.parse_file(&rel, &source) {
+            Ok(file_graph) => {
+                lines_scanned += source.lines().count() as u64;
+                graph.merge(file_graph);
+            }
+            Err(e) => {
+                eprintln!("stratify: skipped {rel}: {e}");
+                files_skipped += 1;
+            }
         }
     }
 
@@ -182,7 +199,8 @@ pub fn analyze_repo_with_stats(root: &Path) -> std::io::Result<(Report, ScanStat
         &boundary_config,
     ));
     let (findings, _suppressed) = stratify_analysis::suppress::apply(&graph, findings);
-    let stats = scan_stats(&graph, start.elapsed().as_millis() as u64, lines_scanned);
+    let mut stats = scan_stats(&graph, start.elapsed().as_millis() as u64, lines_scanned);
+    stats.files_skipped = files_skipped;
     Ok((Report::new(findings), stats))
 }
 
@@ -589,5 +607,19 @@ mod stats_tests {
         let (_, stats) = analyze_repo_with_stats(&dir).unwrap();
         assert_eq!(stats.files_scanned, 1);
         assert_eq!(stats.lines_scanned, 4);
+    }
+
+    #[test]
+    fn non_utf8_file_is_skipped_and_counted() {
+        let dir = std::env::temp_dir().join("stratify-stats-skipped");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.rb"), "def a\nend\n\na\n").unwrap(); // 4 lines
+        std::fs::write(dir.join("b.rb"), [0x64, 0x65, 0x66, 0x20, 0xff, 0xfe, 0x0a]).unwrap();
+        std::fs::write(dir.join("notes.txt"), "not\nsource\n").unwrap();
+        let (_, stats) = analyze_repo_with_stats(&dir).unwrap();
+        assert_eq!(stats.files_scanned, 1);
+        assert_eq!(stats.lines_scanned, 4);
+        assert_eq!(stats.files_skipped, 1);
     }
 }

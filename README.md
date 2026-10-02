@@ -160,7 +160,9 @@ stratify check . --format sarif  # SARIF 2.1.0 for code scanning
 stratify check . --stats
 ```
 
-`--stats` prints one `stratify-stats {json}` line on stderr with `files_scanned`, `lines_scanned`, `functions`, `languages`, and `duration_ms`. Stdout stays unchanged, so you can pipe findings and read the stats side by side.
+`--stats` prints one `stratify-stats {json}` line on stderr with `files_scanned`, `lines_scanned`, `files_skipped`, `functions`, `languages`, and `duration_ms`. Stdout stays unchanged, so you can pipe findings and read the stats side by side.
+
+`files_scanned` and `lines_scanned` cover the same files, the ones that parsed. A source file that is not valid UTF-8, or that the parser rejects, is skipped. Stratify prints `stratify: skipped <file>: <reason>` on stderr, counts the file in `files_skipped`, and continues the scan.
 
 ## Suppress a finding
 

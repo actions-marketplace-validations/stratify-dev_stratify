@@ -46,6 +46,9 @@ backward-compatible).
   above an attribute (Rust) or decorator (Python) now covers the item below.
 
 ### Fixed
+- A source file that is not valid UTF-8 is skipped and counted in the new
+  `files_skipped` stat instead of aborting the scan. `lines_scanned` now
+  counts only files that parsed, so it matches `files_scanned`.
 - The GitHub Action passes its inputs as environment variables instead of
   interpolating them into the shell script, so a path with spaces or shell
   syntax is passed through literally.

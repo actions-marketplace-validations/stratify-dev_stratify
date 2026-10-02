@@ -31,6 +31,7 @@ fn stats_flag_prints_one_json_line_on_stderr() {
         .sum();
     assert_eq!(v["files_scanned"], 2);
     assert_eq!(v["lines_scanned"], expected_lines);
+    assert_eq!(v["files_skipped"], 0);
     // stdout stays a clean JSON report
     let _: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
 }
