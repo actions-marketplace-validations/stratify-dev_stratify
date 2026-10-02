@@ -19,6 +19,10 @@ Homebrew tap, and publishes a shell installer.
    release at `releases/latest` has the binaries, the `brew` formula is in
    `stratify-dev/homebrew-tap`, and the installer is published.
 
+4. The GitHub Action installs `releases/latest`. A new CLI flag the Action
+   passes (such as `--baseline`) reaches `@main` users only after the next
+   release is cut. Cut a release before you advertise the `baseline` input.
+
 ## Verify
 
 ```sh

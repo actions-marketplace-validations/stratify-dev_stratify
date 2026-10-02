@@ -147,7 +147,9 @@ fn main() -> ExitCode {
                     };
                     match baseline::filter_new(report, &text) {
                         Ok((r, hidden)) => {
-                            eprintln!("stratify: {hidden} baselined finding(s) hidden");
+                            if hidden > 0 {
+                                eprintln!("stratify: {hidden} baselined finding(s) hidden");
+                            }
                             r
                         }
                         Err(e) => {

@@ -20,10 +20,13 @@ backward-compatible).
   `defaultConfiguration`, and tags for every rule.
 - Findings carry evidence: `related` locations (clone sites, the file a
   forbidden import points at), an ordered `path` (the files of a cycle), and
-  a `reasons` chain. All three are optional and omitted when empty, so the
-  JSON schema stays at version 1. SARIF maps `related` to
-  `relatedLocations`, `path` to one ordered `codeFlows` thread flow, and
-  `reasons` to `properties.reasons` (and to the code flow's message).
+  a `reasons` chain. `related` and `path` are omitted when empty. Every
+  analysis now attaches `reasons`, so each JSON finding gains a `reasons`
+  key and each SARIF result gains `properties`. Strict-schema consumers
+  need to allow both. The JSON schema stays at version 1. SARIF maps
+  `related` to `relatedLocations`, `path` to one ordered `codeFlows` thread
+  flow, and `reasons` to `properties.reasons` (and to the code flow's
+  message).
 - Comment suppression: a `stratify-ignore: <rule>` comment on a finding's
   line or the line above hides that rule's finding there. Only real
   comments count; the same text in a string literal is ignored.
@@ -34,6 +37,13 @@ backward-compatible).
 ### Changed
 - The Rust adapter records `use` declarations as imports, and a Rust file's
   module key is now its own path instead of its parent directory.
+- Rust imports follow explicit `pub use` re-exports to the file that defines
+  the item. A Rust cycle or boundary violation that rests on an import
+  landing on an unconfirmed re-exporting module (for example a glob
+  re-export) now reports at Info with likely confidence, not Warning.
+- Cycle and boundary findings now point at the import line, so a
+  `stratify-ignore` marker on or above the import suppresses them. A marker
+  above an attribute (Rust) or decorator (Python) now covers the item below.
 
 ### Fixed
 - The GitHub Action passes its inputs as environment variables instead of

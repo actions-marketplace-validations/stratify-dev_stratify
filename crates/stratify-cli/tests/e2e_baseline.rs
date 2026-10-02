@@ -95,3 +95,40 @@ fn missing_or_invalid_baseline_exits_2() {
         .unwrap();
     assert_eq!(invalid.status.code(), Some(2));
 }
+
+#[test]
+fn hidden_count_is_reported_only_when_positive() {
+    let repo = temp_repo("count");
+    let base = repo.join("baseline.json");
+    let run = |baseline: &std::path::Path| {
+        let o = stratify()
+            .arg("check")
+            .arg(&repo)
+            .arg("--baseline")
+            .arg(baseline)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&o.stderr).into_owned()
+    };
+
+    std::fs::write(&base, r#"{"version":1,"fingerprints":[]}"#).unwrap();
+    let none = stratify()
+        .arg("check")
+        .arg(&repo)
+        .arg("--write-baseline")
+        .arg(repo.join("full.json"))
+        .output()
+        .unwrap();
+    assert!(none.status.success());
+
+    let empty_err = run(&base);
+    let full_err = run(&repo.join("full.json"));
+    assert!(
+        !empty_err.contains("baselined finding(s) hidden"),
+        "{empty_err}"
+    );
+    assert!(
+        full_err.contains("baselined finding(s) hidden"),
+        "{full_err}"
+    );
+}
