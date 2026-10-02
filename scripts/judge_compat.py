@@ -35,7 +35,10 @@ def verdicts(report):
     for f in report.get("findings", []):
         j = f.get("judgment")
         if j is not None:
-            out[pair_key(f)] = j.get("verdict")
+            k = pair_key(f)
+            if k in out:
+                print(f"warning: repeated pair key {k}", file=sys.stderr)
+            out[k] = j.get("verdict")
     return out
 
 
@@ -58,6 +61,22 @@ def classify(evidence, stripped1, stripped2):
     return "changed"
 
 
+def build_rows(keys, vev, vs1, vs2):
+    rows = []
+    for k in keys:
+        r2 = vs2.get(k) if vs2 is not None else None
+        rows.append({
+            "rule": k[0], "file": k[1], "start_line": k[2], "message": k[3],
+            "evidence": vev.get(k), "stripped": vs1.get(k), "rerun": r2,
+            "class": classify(vev.get(k), vs1.get(k), r2 if vs2 is not None else None),
+        })
+    return rows
+
+
+def write_rows(path, rows):
+    Path(path).write_text(json.dumps({"findings": rows}, indent=2) + "\n")
+
+
 def run_judge(judge, root, path, model):
     cmd = [judge, "--root", root, "--input", str(path), "--format", "json",
            "--no-cache", "--show-dismissed", "--min-confidence", "unknown"]
@@ -75,6 +94,7 @@ def main():
     ap.add_argument("--judge", required=True)
     ap.add_argument("--root", required=True)
     ap.add_argument("--model")
+    ap.add_argument("--out", help="write every compared row to this JSON file")
     args = ap.parse_args()
 
     p = subprocess.run([args.stratify, "check", args.root, "--format", "json"],
@@ -107,6 +127,8 @@ def main():
               f"{str(vs2.get(k) if vs2 is not None else '-'):10} {k[1]}:{k[2]} {k[3]}")
     print(f"compared={len(keys)} matched={counts['match']} changed={counts['changed']} "
           f"unstable={counts['unstable']} unverified={counts['unverified']}")
+    if args.out:
+        write_rows(args.out, build_rows(keys, vev, vs1, vs2))
     return 0 if counts["match"] == len(keys) else 1
 
 

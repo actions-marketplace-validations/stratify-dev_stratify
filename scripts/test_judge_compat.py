@@ -1,6 +1,10 @@
 import unittest
 
-from judge_compat import classify, compare, pair_key, strip_evidence, verdicts
+import json
+import tempfile
+from pathlib import Path
+
+from judge_compat import build_rows, classify, compare, pair_key, strip_evidence, verdicts, write_rows
 
 
 def finding(rule="dead_code", file="a.rs", line=1, message="unused function `f`", **extra):
@@ -53,6 +57,23 @@ class JudgeCompatTest(unittest.TestCase):
         self.assertEqual(classify("keep", "dismiss", "dismiss"), "changed")
         self.assertEqual(classify("keep", "dismiss", "other"), "changed")
         self.assertEqual(classify("keep", "dismiss", None), "unverified")
+
+    def test_rows_are_written_with_classification(self):
+        k = pair_key(finding())
+        rows = build_rows([k], {k: "keep"}, {k: "dismiss"}, {k: "keep"})
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "o.json"
+            write_rows(p, rows)
+            got = json.loads(p.read_text())["findings"]
+        self.assertEqual(got[0]["class"], "unstable")
+        self.assertEqual(got[0]["file"], "a.rs")
+        self.assertEqual(got[0]["rerun"], "keep")
+
+    def test_rows_without_a_rerun_have_none(self):
+        k = pair_key(finding())
+        rows = build_rows([k], {k: "keep"}, {k: "keep"}, None)
+        self.assertIsNone(rows[0]["rerun"])
+        self.assertEqual(rows[0]["class"], "match")
 
 
 if __name__ == "__main__":

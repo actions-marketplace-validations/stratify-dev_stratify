@@ -1,0 +1,744 @@
+{
+  "findings": [
+    {
+      "rule": "dead_code",
+      "file": "crates/stratify-analysis/src/imports.rs",
+      "start_line": 100,
+      "message": "possibly unused function `earliest_spans`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "crates/stratify-analysis/src/imports.rs",
+      "start_line": 114,
+      "message": "possibly unused function `file_spans`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "crates/stratify-analysis/src/imports.rs",
+      "start_line": 206,
+      "message": "possibly unused function `fqn_spans`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "crates/stratify-analysis/src/imports.rs",
+      "start_line": 91,
+      "message": "possibly unused function `file_import_spans`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "crates/stratify-analysis/src/imports.rs",
+      "start_line": 96,
+      "message": "possibly unused function `fqn_import_spans`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "crates/stratify-analysis/src/lib.rs",
+      "start_line": 18,
+      "message": "possibly unused function `span`",
+      "evidence": "keep",
+      "stripped": "keep",
+      "rerun": "keep",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "crates/stratify-analysis/src/lib.rs",
+      "start_line": 29,
+      "message": "possibly unused function `add_sym`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "keep",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "crates/stratify-analysis/src/lib.rs",
+      "start_line": 48,
+      "message": "possibly unused function `add_ref`",
+      "evidence": "keep",
+      "stripped": "keep",
+      "rerun": "keep",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "crates/stratify-analysis/src/lib.rs",
+      "start_line": 65,
+      "message": "possibly unused function `file_sym`",
+      "evidence": "dismiss",
+      "stripped": "keep",
+      "rerun": "dismiss",
+      "class": "unstable"
+    },
+    {
+      "rule": "dead_code",
+      "file": "crates/stratify-analysis/src/lib.rs",
+      "start_line": 70,
+      "message": "possibly unused function `add_import`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "crates/stratify-analysis/src/lib.rs",
+      "start_line": 76,
+      "message": "possibly unused function `add_import_at`",
+      "evidence": "keep",
+      "stripped": "keep",
+      "rerun": "keep",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "crates/stratify-cli/src/lsp.rs",
+      "start_line": 188,
+      "message": "possibly unused function `run_stdio`",
+      "evidence": "keep",
+      "stripped": "keep",
+      "rerun": "keep",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "crates/stratify-cli/src/mcp.rs",
+      "start_line": 134,
+      "message": "possibly unused function `run_stdio`",
+      "evidence": "keep",
+      "stripped": "keep",
+      "rerun": "keep",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "crates/stratify-core/src/finding.rs",
+      "start_line": 110,
+      "message": "possibly unused function `new`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "crates/stratify-core/src/finding.rs",
+      "start_line": 46,
+      "message": "possibly unused function `new`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "crates/stratify-core/src/graph.rs",
+      "start_line": 94,
+      "message": "possibly unused function `complexities`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "crates/stratify-report/src/lib.rs",
+      "start_line": 11,
+      "message": "possibly unused function `sample_finding`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "crates/stratify-report/src/sarif.rs",
+      "start_line": 54,
+      "message": "unused function `physical`",
+      "evidence": "keep",
+      "stripped": "keep",
+      "rerun": "keep",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "crates/stratify-report/src/sarif.rs",
+      "start_line": 65,
+      "message": "unused function `result_of`",
+      "evidence": "keep",
+      "stripped": "keep",
+      "rerun": "keep",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "crates/stratify-telemetry/src/emit.rs",
+      "start_line": 19,
+      "message": "possibly unused function `resource`",
+      "evidence": "keep",
+      "stripped": "keep",
+      "rerun": "keep",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "crates/stratify-telemetry/src/emit.rs",
+      "start_line": 30,
+      "message": "possibly unused function `header_map`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "crates/stratify-telemetry/src/emit.rs",
+      "start_line": 36,
+      "message": "possibly unused function `emit`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_bench.py",
+      "start_line": 11,
+      "message": "unused function `test_parse_stats_without_line_raises`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_bench.py",
+      "start_line": 15,
+      "message": "unused function `test_peak_rss_units`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_bench.py",
+      "start_line": 19,
+      "message": "unused function `test_profile_from_binary_path`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_bench.py",
+      "start_line": 24,
+      "message": "unused function `test_profile_override_wins`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_bench.py",
+      "start_line": 27,
+      "message": "unused function `test_build_result_records_provenance`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_bench.py",
+      "start_line": 7,
+      "message": "unused function `test_parse_stats_finds_the_prefixed_line`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_judge_compat.py",
+      "start_line": 10,
+      "message": "unused function `finding`",
+      "evidence": "keep",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "changed"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_judge_compat.py",
+      "start_line": 16,
+      "message": "unused function `judged`",
+      "evidence": "keep",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "changed"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_judge_compat.py",
+      "start_line": 21,
+      "message": "unused function `test_strip_removes_the_three_evidence_keys_from_every_finding`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_judge_compat.py",
+      "start_line": 30,
+      "message": "unused function `test_pair_key_uses_rule_file_line_message`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_judge_compat.py",
+      "start_line": 36,
+      "message": "unused function `test_verdicts_keep_only_judged_findings`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_judge_compat.py",
+      "start_line": 41,
+      "message": "unused function `test_compare_flags_differing_verdicts`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_judge_compat.py",
+      "start_line": 48,
+      "message": "unused function `test_compare_treats_a_missing_counterpart_as_a_difference`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_judge_compat.py",
+      "start_line": 53,
+      "message": "unused function `test_classify`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_judge_compat.py",
+      "start_line": 61,
+      "message": "unused function `test_rows_are_written_with_classification`",
+      "evidence": "keep",
+      "stripped": "keep",
+      "rerun": "keep",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_judge_compat.py",
+      "start_line": 72,
+      "message": "unused function `test_rows_without_a_rerun_have_none`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_precision.py",
+      "start_line": 101,
+      "message": "unused function `test_entry_errors`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_precision.py",
+      "start_line": 113,
+      "message": "unused function `test_document_shape`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_precision.py",
+      "start_line": 117,
+      "message": "unused function `test_duplicate_entry`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_precision.py",
+      "start_line": 121,
+      "message": "unused function `test_listed_pair_with_findings_is_an_error`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_precision.py",
+      "start_line": 127,
+      "message": "unused function `test_status_not_applicable`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_precision.py",
+      "start_line": 135,
+      "message": "unused function `row`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_precision.py",
+      "start_line": 138,
+      "message": "unused function `test_every_pair_is_reported`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_precision.py",
+      "start_line": 142,
+      "message": "unused function `test_statuses`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_precision.py",
+      "start_line": 160,
+      "message": "unused function `setUp`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_precision.py",
+      "start_line": 179,
+      "message": "unused function `write_corpus`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_precision.py",
+      "start_line": 18,
+      "message": "unused function `finding`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_precision.py",
+      "start_line": 184,
+      "message": "unused function `fake`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_precision.py",
+      "start_line": 190,
+      "message": "unused function `run_tool`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_precision.py",
+      "start_line": 196,
+      "message": "unused function `test_valid_corpus_exits_zero`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_precision.py",
+      "start_line": 201,
+      "message": "unused function `test_stale_label_exits_two`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_precision.py",
+      "start_line": 207,
+      "message": "unused function `test_failing_binary_exits_one`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_precision.py",
+      "start_line": 213,
+      "message": "unused function `test_invalid_json_exits_one`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_precision.py",
+      "start_line": 219,
+      "message": "unused function `test_unclonable_url_exits_one`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_precision.py",
+      "start_line": 22,
+      "message": "unused function `label`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_precision.py",
+      "start_line": 225,
+      "message": "unused function `test_missing_labels_file_exits_one`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_precision.py",
+      "start_line": 232,
+      "message": "unused function `test_schema_errors_survive_a_later_clone_failure`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_precision.py",
+      "start_line": 243,
+      "message": "unused function `test_not_applicable_pair_with_findings_exits_two`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_precision.py",
+      "start_line": 249,
+      "message": "unused function `test_not_applicable_footer`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_precision.py",
+      "start_line": 27,
+      "message": "unused function `test_language_of`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_precision.py",
+      "start_line": 32,
+      "message": "unused function `test_match_requires_rule_file_line_and_substring`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_precision.py",
+      "start_line": 41,
+      "message": "unused function `test_schema_errors`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_precision.py",
+      "start_line": 52,
+      "message": "unused function `test_stale_ambiguous_duplicate_and_incomplete`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_precision.py",
+      "start_line": 72,
+      "message": "unused function `test_partial_rules_allow_unlabelled`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_precision.py",
+      "start_line": 80,
+      "message": "unused function `test_missing_or_non_list_labels`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_precision.py",
+      "start_line": 84,
+      "message": "unused function `test_non_object_label`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_precision.py",
+      "start_line": 88,
+      "message": "unused function `test_non_object_document`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_precision.py",
+      "start_line": 93,
+      "message": "possibly unused function `entry`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_precision.py",
+      "start_line": 96,
+      "message": "unused function `test_valid_and_empty`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_validate_sarif.py",
+      "start_line": 34,
+      "message": "unused function `run_validator`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_validate_sarif.py",
+      "start_line": 42,
+      "message": "unused function `test_rejects_invalid_sarif`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    },
+    {
+      "rule": "dead_code",
+      "file": "scripts/test_validate_sarif.py",
+      "start_line": 53,
+      "message": "unused function `test_generated_sarif_matches_schema`",
+      "evidence": "dismiss",
+      "stripped": "dismiss",
+      "rerun": "dismiss",
+      "class": "match"
+    }
+  ]
+}
