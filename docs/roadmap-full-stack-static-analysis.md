@@ -71,7 +71,7 @@ Status: in progress.
 Shipped:
 
 - Rust cycles and layer boundaries.
-- The precision tool, `scripts/precision.py`. It exits 0 on a clean run, 1 on a validation failure, and 2 on a clone, checkout, or scan failure.
+- The precision tool, `scripts/precision.py`. It exits 0 on a clean run, 2 on a label or validation failure, and 1 on a clone, checkout, or scan failure.
 - The applicability policy. `corpus/applicability.json` exists with no entries, so all 36 pairs stay applicable (`5c21b48`). Pairs have the statuses `gate-ready`, `insufficient`, `no-data`, `incomplete`, and `not-applicable`. The gate-ready bar is unchanged. Sparse rules follow an evidence plan in the corpus docs.
 - The first labels. The latest run of the tool reads:
 
@@ -119,7 +119,7 @@ Exit:
 
 ## Phase 1: Findings model and adoption basics
 
-Status: shipped: rule registry, evidence fields with the SARIF mapping, comment suppression, and the baseline gate with the hardened Action. SARIF output validates against the official OASIS 2.1.0 schema, and CI runs the check (`3f02fcf`). Unknown rule ids in suppression markers print a warning on stderr (`39c2e10`). The judge-compatibility test passes. `docs/judge-compat.md` records the result: code inspection shows the judge never reads the evidence fields, a request capture showed 32 identical bodies per variant, and three live runs show only model noise. Run 3 had 2 changed rows, which the identical captured requests explain as model nondeterminism (`c6aea0b`, `197d25e`, `90d3a73`).
+Status: shipped: rule registry, evidence fields with the SARIF mapping, comment suppression, and the baseline gate with the hardened Action. SARIF output validates against the official OASIS 2.1.0 schema locally, and a CI step for the check is configured (`3f02fcf`). The branch has no remote, so no CI run exists yet. A CI run is pending until the branch is pushed. Unknown rule ids in suppression markers print a warning on stderr (`39c2e10`). The judge-compatibility test passes by code inspection and request capture. `docs/judge-compat.md` records the result: the judge never reads the evidence fields, a request capture showed 32 identical bodies per variant, and three live runs show only model noise (run 3 had 2 changed rows, which the identical captured requests explain as model nondeterminism). All three live runs exited 1 under the script's own criterion (`c6aea0b`, `197d25e`, `90d3a73`).
 
 Objective: give findings enough structure to explain flow results, and give teams a way to adopt a new rule without a wall of old findings.
 

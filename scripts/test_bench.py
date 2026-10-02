@@ -25,7 +25,7 @@ class BenchTest(unittest.TestCase):
         self.assertEqual(profile_from_path("/usr/local/bin/stratify", "release"), "release")
 
     def test_build_result_records_provenance(self):
-        stats = {"files_scanned": 2, "lines_scanned": 9, "functions": 3}
+        stats = {"files_scanned": 2, "lines_scanned": 9, "functions": 3, "files_skipped": 4}
         result = build_result(stats, 1.234, 512.0, "abc1234", "release", "demo v1")
         self.assertEqual(result["stratify_commit"], "abc1234")
         self.assertEqual(result["profile"], "release")
@@ -33,6 +33,7 @@ class BenchTest(unittest.TestCase):
         self.assertIs(result["completed"], True)
         self.assertEqual(result["wall_s"], 1.23)
         self.assertEqual(result["lines"], 9)
+        self.assertEqual(result["files_skipped"], 4)
 
 
 if __name__ == "__main__":

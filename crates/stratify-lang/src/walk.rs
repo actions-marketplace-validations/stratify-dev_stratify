@@ -153,7 +153,8 @@ pub fn cyclomatic(body: Node, src: &str, rules: &ComplexityRules) -> u32 {
 
 const SUPPRESSION_MARKER: &str = "stratify-ignore:";
 
-/// Rule ids named by a `stratify-ignore: a, b` marker in one comment's text.
+/// Rule ids named by a suppression marker in one comment's text. The marker is
+/// `stratify-ignore` and a colon, then a comma-separated rule list.
 /// Each comma-separated item contributes its first word when the word is a
 /// rule-shaped id. No marker, an empty list, or `*` gives an empty Vec.
 pub fn parse_suppression_marker(comment: &str) -> Vec<String> {

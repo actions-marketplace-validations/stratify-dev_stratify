@@ -24,6 +24,10 @@ jobs:
       - name: Tests
         run: cargo test --locked
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: SARIF schema validation
         run: |
           pip install jsonschema==4.*

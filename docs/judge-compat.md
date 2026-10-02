@@ -37,14 +37,14 @@ Run 3 wrote every row to `docs/judge-compat-run3.json`. Its non-matching rows:
 - `scripts/test_judge_compat.py:10` `finding`: evidence keep, stripped dismiss, rerun dismiss. Changed.
 - `scripts/test_judge_compat.py:16` `judged`: evidence keep, stripped dismiss, rerun dismiss. Changed.
 
-The script exits 1 when any row is unstable or unverified, not only when a row is changed. Runs 1 to 3 all exited 1 for that reason. Run 3 has 74 rows because the tree gained the test helpers between runs.
+The script exits 1 when any row is unstable or unverified, not only when a row is changed. Runs 1 to 3 all exited 1 under the script's own criterion, so no live run passed it. Run 3 has 74 rows because the tree gained the test helpers between runs.
 
 ## Why verdicts cannot depend on the evidence fields
 
 Checked in the judge repo at commit 3a6e9f0, under `crates/stratify-judge-core/src`:
 
 - `Finding` has no typed evidence fields. `model.rs:49` declares `extra` with `#[serde(flatten)]`, so `related`, `path` and `reasons` deserialize into `extra`. `Report` does the same at `model.rs:57`.
-- Outside tests, the code touches `Finding.extra` in two places. `verdict.rs:50` inserts `judgment`. `driver.rs:916` filters on `contains_key("judgment")`.
+- Outside tests, the one place the code touches `Finding.extra` is `verdict.rs:50`, which inserts `judgment`. The `contains_key("judgment")` filter in `driver.rs` sits inside `mod tests`, which starts at `driver.rs:485`.
 - `judges/` and `context.rs` never read `extra`, so no model prompt carries these fields.
 
 With and without the fields, the judge sends the same prompts.
@@ -66,4 +66,4 @@ Result (stratify release build at 197d25e, judge 3a6e9f0, 2026-10-02): each vari
 
 Both variants send identical prompts, so any verdict difference is model noise. That covers the changed rows in runs 1 and 3. The changed rows in run 3 are the two new test helpers, where the stripped runs agreed with each other and the evidence run differed. That pattern is what noise looks like on borderline findings, and the identical prompts rule out the evidence fields as the cause. Run 2 had 0 changed.
 
-Conclusion: the Phase 1 judge-compatibility test passes, by code inspection and by three live runs.
+Conclusion: the Phase 1 judge-compatibility test passes by code inspection and request capture. The three live runs show only model noise (run 3 had 2 changed rows), and all three exited 1 under the script's own criterion.

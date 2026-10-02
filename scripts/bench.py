@@ -60,6 +60,7 @@ def build_result(stats, wall, rss_mb, commit, profile, repo_label):
         "files": stats["files_scanned"],
         "lines": stats["lines_scanned"],
         "functions": stats["functions"],
+        "files_skipped": stats.get("files_skipped", 0),
         "wall_s": round(wall, 2),
         "peak_rss_mb": rss_mb,
         "completed": True,
