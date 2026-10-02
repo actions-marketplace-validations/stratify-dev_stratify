@@ -62,7 +62,7 @@ Settle these before Phase 2 starts.
 | Source of type facts | tree-sitter only, or import facts from external indexers (SCIP, `tsc`, `gopls`) | tree-sitter first. Add an optional SCIP import when a language stalls below the precision target |
 | First flow language | TypeScript, Python, Go, Java, Ruby | TypeScript: explicit imports, type annotations in source, high demand for security rules. Go is the lower-risk alternative |
 | Precision target | Any number | 80 percent per rule, per language, before Warning |
-| Scan-time budget | Any number | Set in Phase 0 from a measured run on a repo above 500k lines |
+| Scan-time budget | Any number | Set in Phase 0 from a measured run on a repo above 500k lines. The row exists (kubernetes, 90.27 s). The owner chooses the number |
 
 ## Phase 0: Baseline and measurement
 
@@ -71,17 +71,26 @@ Status: in progress.
 Shipped:
 
 - Rust cycles and layer boundaries.
-- The precision tool, `scripts/precision.py`.
-- The first labels. The tool reports `dead_code` for Rust as tp 0, fp 15, unlabelled 0, repos 1, coverage 100%, precision 0%, status `insufficient`. The footer reads: `gate-ready: 0 of 36 rule-language pairs. Precision targets apply only to gate-ready pairs.`
-- The benchmark tool, `scripts/bench.py`, and the self-scan row in `docs/benchmarks.md`: 48 files, 10,896 lines, 0.34 seconds wall, 34.5 MB peak RSS.
+- The precision tool, `scripts/precision.py`. It exits 0 on a clean run, 1 on a validation failure, and 2 on a clone, checkout, or scan failure.
+- The applicability policy. `corpus/applicability.json` exists with no entries, so all 36 pairs stay applicable (`5c21b48`). Pairs have the statuses `gate-ready`, `insufficient`, `no-data`, `incomplete`, and `not-applicable`. The gate-ready bar is unchanged. Sparse rules follow an evidence plan in the corpus docs.
+- The first labels. The latest run of the tool reads:
+
+  `gate-ready: 0 of 36 applicable pairs (0 not applicable). Precision targets apply only to gate-ready pairs.`
+
+  The run used `target/release/stratify` at `90d3a73` against a local clone of this repo, because local `main` is not pushed and the default clone of the corpus URL cannot reach the pinned commit `a809171`. Only Rust `dead_code` has labels: tp 0, fp 15, unlabelled 0, repos 1, coverage 100%, precision 0%, status `insufficient`. Rust `duplication`, `complexity`, `hotspot`, and `cycle` are `incomplete`. Every other pair is `no-data`. The tool measures no pair.
+- The benchmark tool, `scripts/bench.py`, and these release rows in `docs/benchmarks.md`, both at `090da17` on Darwin arm64, Apple M5:
+  - stratify self: 50 files, 11,984 lines, 0.71 s, 36.2 MB peak RSS.
+  - kubernetes v1.31.0 (`9edcffc`): 15,372 files, 4,520,718 lines, 90.27 s, 8,186.5 MB peak RSS. The scan completed.
+- The performance fix (`71b5005`). A profile showed 100% of samples in `deadcode::analyze`. The fix indexes edges by source. The self-scan and 23 fixtures give byte-identical output.
+- Scan statistics describe one population. A file that is not valid UTF-8 is skipped and counted in `files_skipped`, and lines count only for parsed files (`2ac3fef`).
 
 Remaining:
 
-- Labelled repos until all 36 rule-language pairs are gate-ready.
-- The large-repo benchmark row. The Kubernetes v1.31.0 scan is not measured. It did not finish within 30 minutes. The suspected cause is the O(nodes x references) reachability loop in `crates/stratify-analysis/src/deadcode.rs`. This blocks the large-repo benchmark and the scan-time budget.
-- The scan-time budget, set from that row.
+- Labelled repos for every applicable pair. Today 0 of 36 are gate-ready, and 30 pairs have no labels at all.
+- The scan-time budget. The large-repo row now exists. Choosing the budget from it is the owner's decision. This document sets none.
+- Pushing `main`, so the corpus pin `a809171` is reachable from the default clone URL.
 
-Phase 0 stays open until both remaining measurements exist.
+Phase 0 stays open until every applicable pair is gate-ready and the owner sets the scan-time budget. The large-repo benchmark is done.
 
 Work:
 
@@ -110,7 +119,7 @@ Exit:
 
 ## Phase 1: Findings model and adoption basics
 
-Status: shipped so far: rule registry, evidence fields with the SARIF mapping, comment suppression, and the baseline gate with the hardened Action. The judge-compatibility exit test is not yet run. It needs a run of `stratify-judge` against a report with evidence fields.
+Status: shipped: rule registry, evidence fields with the SARIF mapping, comment suppression, and the baseline gate with the hardened Action. SARIF output validates against the official OASIS 2.1.0 schema, and CI runs the check (`3f02fcf`). Unknown rule ids in suppression markers print a warning on stderr (`39c2e10`). The judge-compatibility test passes. `docs/judge-compat.md` records the result: code inspection shows the judge never reads the evidence fields, a request capture showed 32 identical bodies per variant, and three live runs show only model noise (`c6aea0b`, `197d25e`, `90d3a73`).
 
 Objective: give findings enough structure to explain flow results, and give teams a way to adopt a new rule without a wall of old findings.
 

@@ -106,3 +106,50 @@ The repository was clean after verification. The current branch was `main`, whic
 ## Overall sign-off condition
 
 Phase 1 can be described as implemented after its compatibility, SARIF validity, and CI requirements pass. Phase 0 must remain marked in progress until the precision acceptance policy is explicit, every applicable pair has the required evidence status, and a completed large-repository benchmark exists. Do not claim full roadmap completion while the performance run is still timing out or while required precision pairs remain unmeasured.
+
+## Resolution
+
+Date: 2026-10-02. Follow-up work ran on branch `roadmap-qa-fixes`. Phase 0 stays in progress.
+
+### Findings
+
+- Finding 1, precision path for sparse rules: addressed by policy, not by evidence. `5c21b48` adds `corpus/applicability.json` (no entries, so all 36 pairs stay applicable), the `not-applicable` status, a sparse-rule evidence plan, and an end-to-end precision tool. The gate-ready bar is unchanged. 0 of 36 pairs are gate-ready.
+- Finding 2, scan stats: resolved in `2ac3fef`. Non-UTF-8 files are skipped and counted in `files_skipped`, and lines count only for parsed files.
+- Finding 3, branch: resolved by the plan note in `docs/superpowers/plans/2026-10-01-roadmap-phase-0-1.md`. The owner chose `roadmap-qa-fixes`, and no history was rewritten.
+- Finding 4, performance: resolved in `71b5005`. The profile put 100% of samples in `deadcode::analyze`, and the fix indexes edges by source. Kubernetes completes, and the self-scan and 23 fixtures give byte-identical output.
+- Finding 5, benchmark rows: resolved in `090da17`, `e35dd4b`, and `8e918f8`. `docs/benchmarks.md` has release rows at `090da17`: stratify self (50 files, 11,984 lines, 0.71 s, 36.2 MB) and kubernetes v1.31.0 at `9edcffc` (15,372 files, 4,520,718 lines, 90.27 s, 8,186.5 MB, completed).
+
+### Requirements to complete Phase 0
+
+- [x] Set the corpus acceptance policy. `5c21b48`, `docs/roadmap-full-stack-static-analysis.md`.
+- [ ] Grow and pin the corpus. Open: only this repo is in the corpus, and `main` is not pushed, so the pin `a809171` is unreachable from the default clone URL.
+- [ ] Label findings completely for any claimed precision. Open: Rust `dead_code` has labels but one repo. Rust `duplication`, `complexity`, `hotspot`, and `cycle` are `incomplete`. 30 pairs have no labels.
+- [x] Validate the precision tool end to end. `5c21b48`. Exit codes are 0, 1, and 2.
+- [x] Report coverage with precision. `5c21b48`. The tool prints counts, repos, coverage, precision, and status per pair, plus a gate-ready footer.
+- [x] Fix and define scan statistics. `2ac3fef`.
+- [x] Resolve the large-repo performance bottleneck. `71b5005`.
+- [x] Record comparable benchmarks. `090da17`, `e35dd4b`, `8e918f8`, `docs/benchmarks.md`.
+- [x] Update the roadmap status from evidence. `docs/roadmap-full-stack-static-analysis.md`.
+
+### Phase 0 conditions left open
+
+- [ ] Any pair reaching gate-ready. Open: `gate-ready: 0 of 36 applicable pairs`.
+- [ ] The scan-time budget. Open: the large-repo row exists, and choosing the budget is the owner's decision.
+- [ ] Phase 0 sign-off. Open: every applicable pair must be gate-ready and the budget must be set.
+
+### Requirements to complete Phase 1
+
+- [x] Rule registry. Shipped in `98728e8`, unchanged this round.
+- [x] Evidence model. Shipped in `5483695`, unchanged this round.
+- [x] Evidence usefulness. Shipped in `5483695`, unchanged this round.
+- [x] SARIF output. `3f02fcf` validates generated SARIF against the OASIS 2.1.0 schema (draft-04), and CI runs the check.
+- [x] Suppression semantics. `e3b033b` and `62b8b87`. `39c2e10` adds a stderr warning for unknown rule ids.
+- [x] Baseline behavior. Shipped in `7d3dfa8`, unchanged this round.
+- [x] GitHub Action. Shipped earlier, unchanged this round. Script tests run in CI.
+- [x] Judge compatibility. `c6aea0b`, `197d25e`, `90d3a73`, `docs/judge-compat.md`. The code never reads the evidence fields, 32 request bodies per variant matched, and three live runs show only model noise.
+- [x] Documentation and release notes. `CHANGELOG.md` Unreleased covers the performance fix, the skip behavior, the unknown-id warning, and the roadmap status.
+- [x] Repository workflow. Resolved by the finding 3 note.
+
+### Sign-off
+
+Phase 1 can be described as implemented. Phase 0 is not signed off. The large-repo benchmark is done. The precision gate is not.

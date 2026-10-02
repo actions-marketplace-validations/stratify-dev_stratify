@@ -26,6 +26,7 @@
 - Each user-visible change adds a line under `## [Unreleased]` in `CHANGELOG.md` (Task 1 creates the heading above `## [0.6.0]`).
 - Commit messages follow the repo style: a `feat(scope): ...`, `fix(scope): ...`, or `docs: ...` subject line. The plan prescribes no trailer or co-author line.
 - Work on branch `roadmap-phase-0-1`. Never commit to `main`.
+  - Note: The branch was merged to `main` locally on 2026-10-02 at the owner's direction. Follow-up work happens on `roadmap-qa-fixes`.
 - Status language:
   - No document, commit, or changelog entry calls Phase 0 complete.
   - Phase 0 closes only when two conditions hold. First, `scripts/precision.py` reports all 36 rule-language pairs `gate-ready`. Second, `docs/benchmarks.md` holds a measured large-repo row.
