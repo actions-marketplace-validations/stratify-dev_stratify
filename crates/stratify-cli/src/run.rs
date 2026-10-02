@@ -31,6 +31,7 @@ pub enum Format {
 #[derive(Debug, Clone)]
 pub struct ScanStats {
     pub files_scanned: u64,
+    pub lines_scanned: u64,
     pub functions: u64,
     pub complexity_max: u32,
     pub complexity_mean: f64,
@@ -53,7 +54,7 @@ fn lang_of_file(path: &str) -> Option<&'static str> {
 }
 
 /// Compute repo-wide stats from the merged IR plus the measured wall time.
-pub fn scan_stats(graph: &IrGraph, duration_ms: u64) -> ScanStats {
+pub fn scan_stats(graph: &IrGraph, duration_ms: u64, lines_scanned: u64) -> ScanStats {
     let mut files_scanned = 0u64;
     let mut functions = 0u64;
     let mut languages = BTreeSet::new();
@@ -78,6 +79,7 @@ pub fn scan_stats(graph: &IrGraph, duration_ms: u64) -> ScanStats {
     };
     ScanStats {
         files_scanned,
+        lines_scanned,
         functions,
         complexity_max,
         complexity_mean,
@@ -109,6 +111,7 @@ pub fn analyze_repo_with_stats(root: &Path) -> std::io::Result<(Report, ScanStat
     let ignore_globs = load_ignore_globs(root);
     let mut graph = IrGraph::new();
     let mut rust_crates: Vec<stratify_analysis::resolve::RustCrate> = Vec::new();
+    let mut lines_scanned: u64 = 0;
     for entry in WalkBuilder::new(root).build() {
         let entry = match entry {
             Ok(e) => e,
@@ -148,6 +151,7 @@ pub fn analyze_repo_with_stats(root: &Path) -> std::io::Result<(Report, ScanStat
         if ignore_globs.is_match(&rel) {
             continue;
         }
+        lines_scanned += source.lines().count() as u64;
         if let Ok(file_graph) = adapter.parse_file(&rel, &source) {
             graph.merge(file_graph);
         }
@@ -178,7 +182,7 @@ pub fn analyze_repo_with_stats(root: &Path) -> std::io::Result<(Report, ScanStat
         &boundary_config,
     ));
     let (findings, _suppressed) = stratify_analysis::suppress::apply(&graph, findings);
-    let stats = scan_stats(&graph, start.elapsed().as_millis() as u64);
+    let stats = scan_stats(&graph, start.elapsed().as_millis() as u64, lines_scanned);
     Ok((Report::new(findings), stats))
 }
 
@@ -554,7 +558,7 @@ mod stats_tests {
         g.set_complexity(f1, 4);
         g.set_complexity(f2, 10);
 
-        let stats = scan_stats(&g, 123);
+        let stats = scan_stats(&g, 123, 0);
         assert_eq!(stats.files_scanned, 2);
         assert_eq!(stats.functions, 2);
         assert_eq!(stats.complexity_max, 10);
@@ -567,11 +571,23 @@ mod stats_tests {
     #[test]
     fn scan_stats_empty_graph_is_zero() {
         let g = IrGraph::new();
-        let stats = scan_stats(&g, 0);
+        let stats = scan_stats(&g, 0, 0);
         assert_eq!(stats.files_scanned, 0);
         assert_eq!(stats.functions, 0);
         assert_eq!(stats.complexity_max, 0);
         assert_eq!(stats.complexity_mean, 0.0);
         assert!(stats.languages.is_empty());
+    }
+
+    #[test]
+    fn scan_counts_lines_of_parsed_files_only() {
+        let dir = std::env::temp_dir().join("stratify-stats-lines");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.rb"), "def a\nend\n\na\n").unwrap(); // 4 lines
+        std::fs::write(dir.join("notes.txt"), "not\nsource\n").unwrap(); // not parsed
+        let (_, stats) = analyze_repo_with_stats(&dir).unwrap();
+        assert_eq!(stats.files_scanned, 1);
+        assert_eq!(stats.lines_scanned, 4);
     }
 }

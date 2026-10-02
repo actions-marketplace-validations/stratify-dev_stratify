@@ -10,6 +10,8 @@ backward-compatible).
 ## [Unreleased]
 
 ### Added
+- `--stats` prints scan statistics (files, lines, functions, languages,
+  duration) as one `stratify-stats` JSON line on stderr.
 - Dependency cycles and layer boundaries for Rust. Every language now gets
   all six analyses. Imports resolve through `crate::`, `self::`, `super::`,
   and crate names read from each `Cargo.toml` in the scan.

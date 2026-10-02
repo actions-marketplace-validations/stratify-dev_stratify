@@ -43,6 +43,9 @@ enum Command {
         /// Write every current finding to this baseline file and exit 0.
         #[arg(long)]
         write_baseline: Option<PathBuf>,
+        /// Print scan statistics as one JSON line on stderr, prefixed `stratify-stats `.
+        #[arg(long = "stats")]
+        print_stats: bool,
     },
     /// Run an MCP server over stdio for coding agents.
     Mcp,
@@ -97,6 +100,7 @@ fn main() -> ExitCode {
             project,
             baseline,
             write_baseline,
+            print_stats,
         } => {
             let (report, stats) = match run::analyze_repo_with_stats(&path) {
                 Ok(r) => r,
@@ -105,6 +109,19 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
+
+            if print_stats {
+                eprintln!(
+                    "stratify-stats {}",
+                    serde_json::json!({
+                        "files_scanned": stats.files_scanned,
+                        "lines_scanned": stats.lines_scanned,
+                        "functions": stats.functions,
+                        "languages": stats.languages,
+                        "duration_ms": stats.duration_ms,
+                    })
+                );
+            }
 
             if let Some(out) = &write_baseline {
                 if let Err(e) = std::fs::write(out, baseline::write(&report)) {
