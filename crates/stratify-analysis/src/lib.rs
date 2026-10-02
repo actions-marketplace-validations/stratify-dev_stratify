@@ -7,6 +7,7 @@ pub mod hotspot;
 pub mod ignore;
 pub mod imports;
 pub mod resolve;
+pub mod suppress;
 
 #[cfg(test)]
 pub(crate) mod test_support {

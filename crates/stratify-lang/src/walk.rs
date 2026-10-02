@@ -6,7 +6,7 @@
 //! ancestor walk. This module captures that common structure once. The
 //! per-language specifics (which node kinds count) are passed in as parameters.
 
-use stratify_core::ir::Span;
+use stratify_core::ir::{Span, Suppression};
 use stratify_core::{IrGraph, Token};
 use tree_sitter::Node;
 
@@ -151,6 +151,71 @@ pub fn cyclomatic(body: Node, src: &str, rules: &ComplexityRules) -> u32 {
     1 + count
 }
 
+const SUPPRESSION_MARKER: &str = "stratify-ignore:";
+
+/// Rule ids named by a `stratify-ignore: a, b` marker in one comment's text.
+/// Each comma-separated item contributes its first word when the word is a
+/// rule-shaped id. No marker, an empty list, or `*` gives an empty Vec.
+pub fn parse_suppression_marker(comment: &str) -> Vec<String> {
+    let Some(pos) = comment.find(SUPPRESSION_MARKER) else {
+        return Vec::new();
+    };
+    comment[pos + SUPPRESSION_MARKER.len()..]
+        .split(',')
+        .filter_map(|item| item.split_whitespace().next())
+        .map(|word| word.trim_end_matches("*/"))
+        .filter(|word| is_rule_id(word))
+        .map(str::to_string)
+        .collect()
+}
+
+fn is_rule_id(word: &str) -> bool {
+    let mut chars = word.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_lowercase())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// Record a Suppression for each comment node (matched by grammar kind)
+/// whose text carries a marker, in source order. String literals are never
+/// comment nodes, so a marker inside a string is ignored.
+pub fn collect_suppressions(
+    graph: &mut IrGraph,
+    root: Node,
+    src: &str,
+    file: &str,
+    comment_kinds: &[&str],
+) {
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if comment_kinds.contains(&node.kind()) {
+            let rules = parse_suppression_marker(node_text(node, src));
+            if !rules.is_empty() {
+                let start = node.start_position();
+                let end = node.end_position();
+                // A comment that swallows its newline ends at column 0 of the
+                // next row. It still belongs to the row before.
+                let end_row = if end.column == 0 && end.row > start.row {
+                    end.row - 1
+                } else {
+                    end.row
+                };
+                graph.add_suppression(Suppression {
+                    file: file.to_string(),
+                    start_line: start.row + 1,
+                    end_line: end_row + 1,
+                    rules,
+                });
+            }
+            continue;
+        }
+        let mut cursor = node.walk();
+        let children: Vec<Node> = node.children(&mut cursor).collect();
+        for child in children.into_iter().rev() {
+            stack.push(child);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,6 +226,49 @@ mod tests {
         p.set_language(&tree_sitter_go::LANGUAGE.into())
             .expect("load go grammar");
         p.parse(src, None).expect("parse go")
+    }
+
+    #[test]
+    fn parses_marker_rule_lists() {
+        assert_eq!(
+            parse_suppression_marker("// stratify-ignore: dead_code"),
+            vec!["dead_code"]
+        );
+        assert_eq!(
+            parse_suppression_marker("# stratify-ignore: dead_code, complexity -- router calls it"),
+            vec!["dead_code", "complexity"]
+        );
+        assert_eq!(
+            parse_suppression_marker("/* stratify-ignore: cycle */"),
+            vec!["cycle"]
+        );
+        assert_eq!(
+            parse_suppression_marker("/*stratify-ignore: cycle*/"),
+            vec!["cycle"]
+        );
+        assert!(parse_suppression_marker("// stratify-ignore:").is_empty());
+        assert!(parse_suppression_marker("// stratify-ignore: *").is_empty());
+        assert!(parse_suppression_marker("// nothing here").is_empty());
+    }
+
+    #[test]
+    fn collects_markers_only_from_comment_nodes_in_source_order() {
+        let src = "package a\n// stratify-ignore: dead_code\nfunc a() {}\nvar s = \"stratify-ignore: complexity\"\n/* stratify-ignore: duplication\n */\nfunc c() {}\n";
+        let tree = parse_go(src);
+        let mut g = IrGraph::new();
+        collect_suppressions(&mut g, tree.root_node(), src, "a.go", &["comment"]);
+        let got: Vec<(usize, usize, Vec<String>)> = g
+            .suppressions()
+            .iter()
+            .map(|s| (s.start_line, s.end_line, s.rules.clone()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (2, 2, vec!["dead_code".to_string()]),
+                (5, 6, vec!["duplication".to_string()])
+            ]
+        );
     }
 
     fn go_normalize_rules() -> NormalizeRules<'static> {

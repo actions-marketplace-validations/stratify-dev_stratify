@@ -154,6 +154,20 @@ stratify check . --format json   # structured findings for tooling
 stratify check . --format sarif  # SARIF 2.1.0 for code scanning
 ```
 
+## Suppress a finding
+
+Put `stratify-ignore: <rule>` in a comment on the finding's line or the line above. Name one rule or a comma-separated list. A rule id is required, so a suppression never hides more than you meant. Text after the first word of each item is ignored, so you can give a reason.
+
+```ruby
+# stratify-ignore: dead_code -- called by the framework
+def after_commit_hook
+end
+```
+
+The marker counts only inside a comment: `//`, `/* */`, and `///` in Java, TypeScript, Go, and Rust, and `#` in Ruby and Python, plus Ruby's `=begin`/`=end`. The same text inside a string literal or a Python docstring does nothing. A block comment counts when it ends on the line above the finding.
+
+Rule ids: `dead_code`, `duplication`, `complexity`, `hotspot`, `cycle`, `boundary`. A finding's `rule` field in JSON output shows its id.
+
 ## CI quality gate (GitHub Action)
 
 Drop Stratify into any workflow as a gate:

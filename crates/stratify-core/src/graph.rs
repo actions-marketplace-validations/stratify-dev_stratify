@@ -1,4 +1,4 @@
-use crate::ir::{Reference, Symbol, SymbolId, Token};
+use crate::ir::{Reference, Suppression, Symbol, SymbolId, Token};
 
 /// The whole repository as one language-agnostic graph.
 #[derive(Debug, Default, Clone)]
@@ -9,6 +9,7 @@ pub struct IrGraph {
     tokens: Vec<Token>,
     complexity: Vec<(SymbolId, u32)>,
     unresolved_calls: Vec<(SymbolId, String)>,
+    suppressions: Vec<Suppression>,
 }
 
 impl IrGraph {
@@ -105,6 +106,14 @@ impl IrGraph {
         &self.unresolved_calls
     }
 
+    pub fn add_suppression(&mut self, s: Suppression) {
+        self.suppressions.push(s);
+    }
+
+    pub fn suppressions(&self) -> &[Suppression] {
+        &self.suppressions
+    }
+
     /// Merge another graph into this one, remapping the other graph's ids so
     /// they stay unique. Returns nothing; used to combine per-file graphs.
     pub fn merge(&mut self, other: IrGraph) {
@@ -129,6 +138,7 @@ impl IrGraph {
             self.unresolved_calls
                 .push((SymbolId(from.0 + offset), name));
         }
+        self.suppressions.extend(other.suppressions);
     }
 }
 
@@ -137,6 +147,27 @@ mod tests {
     use super::*;
     use crate::confidence::Confidence;
     use crate::ir::{RefKind, Span, SymbolId, SymbolKind, Visibility};
+
+    #[test]
+    fn suppressions_survive_merge() {
+        let mut a = IrGraph::new();
+        a.add_suppression(Suppression {
+            file: "a.rs".into(),
+            start_line: 1,
+            end_line: 1,
+            rules: vec!["dead_code".into()],
+        });
+        let mut b = IrGraph::new();
+        b.add_suppression(Suppression {
+            file: "b.rs".into(),
+            start_line: 4,
+            end_line: 6,
+            rules: vec!["cycle".into()],
+        });
+        a.merge(b);
+        let files: Vec<&str> = a.suppressions().iter().map(|s| s.file.as_str()).collect();
+        assert_eq!(files, vec!["a.rs", "b.rs"]);
+    }
 
     fn tok(file: &str, norm: &str) -> crate::ir::Token {
         crate::ir::Token {

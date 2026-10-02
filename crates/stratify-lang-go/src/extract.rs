@@ -313,6 +313,7 @@ pub(crate) fn extract(file: &str, src: &str) -> IrGraph {
     let file_id = add_file_symbol(&mut g, file, root);
 
     walk::tokenize(&mut g, root, src, file, &NORMALIZE_RULES);
+    walk::collect_suppressions(&mut g, root, src, file, &["comment"]);
 
     extract_imports(&mut g, file, src, root, file_id);
     extract_definitions(&mut g, file, src, root, file_id);
@@ -474,5 +475,23 @@ mod tests {
             .collect();
         assert!(names.contains(&"x/y"));
         assert!(names.contains(&"p/q"));
+    }
+
+    #[test]
+    fn suppression_markers_come_only_from_comments() {
+        let src = "package a\n// stratify-ignore: dead_code\nfunc a() {}\nvar s = \"stratify-ignore: complexity\"\n/* stratify-ignore: duplication */\nfunc c() {}\n";
+        let g = extract("a.go", src);
+        let got: Vec<(usize, usize, Vec<String>)> = g
+            .suppressions()
+            .iter()
+            .map(|s| (s.start_line, s.end_line, s.rules.clone()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (2, 2, vec!["dead_code".to_string()]),
+                (5, 5, vec!["duplication".to_string()])
+            ]
+        );
     }
 }

@@ -396,6 +396,7 @@ pub(crate) fn extract(file: &str, src: &str) -> IrGraph {
     g.mark_entrypoint(file_id);
 
     walk::tokenize(&mut g, root, src, file, &NORMALIZE_RULES);
+    walk::collect_suppressions(&mut g, root, src, file, &["comment"]);
 
     extract_definitions(&mut g, file, src, root, file_id);
     extract_calls(&mut g, file, src, root, file_id);
@@ -611,5 +612,17 @@ mod tests {
             "expected unresolved call (m, external); got {:?}",
             g.unresolved_calls()
         );
+    }
+
+    #[test]
+    fn suppression_markers_come_only_from_comments() {
+        let src = "# stratify-ignore: dead_code\ndef a():\n    \"\"\"stratify-ignore: complexity\"\"\"\n    s = \"stratify-ignore: duplication\"\n";
+        let g = extract("a.py", src);
+        let got: Vec<(usize, usize, Vec<String>)> = g
+            .suppressions()
+            .iter()
+            .map(|s| (s.start_line, s.end_line, s.rules.clone()))
+            .collect();
+        assert_eq!(got, vec![(1, 1, vec!["dead_code".to_string()])]);
     }
 }

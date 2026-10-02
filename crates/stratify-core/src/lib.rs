@@ -7,4 +7,6 @@ pub mod rule;
 pub use confidence::Confidence;
 pub use finding::{Finding, Related, Report, Severity};
 pub use graph::IrGraph;
-pub use ir::{RefKind, Reference, Span, Symbol, SymbolId, SymbolKind, Token, Visibility};
+pub use ir::{
+    RefKind, Reference, Span, Suppression, Symbol, SymbolId, SymbolKind, Token, Visibility,
+};

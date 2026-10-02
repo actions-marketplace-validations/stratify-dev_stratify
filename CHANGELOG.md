@@ -22,6 +22,9 @@ backward-compatible).
   JSON schema stays at version 1. SARIF maps `related` to
   `relatedLocations`, `path` to one ordered `codeFlows` thread flow, and
   `reasons` to `properties.reasons` (and to the code flow's message).
+- Comment suppression: a `stratify-ignore: <rule>` comment on a finding's
+  line or the line above hides that rule's finding there. Only real
+  comments count; the same text in a string literal is ignored.
 
 ### Changed
 - The Rust adapter records `use` declarations as imports, and a Rust file's

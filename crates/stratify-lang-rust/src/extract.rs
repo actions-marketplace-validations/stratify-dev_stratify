@@ -511,6 +511,7 @@ pub(crate) fn extract(file: &str, src: &str) -> IrGraph {
     });
 
     walk::tokenize(&mut g, root, src, file, &NORMALIZE_RULES);
+    walk::collect_suppressions(&mut g, root, src, file, &["line_comment", "block_comment"]);
 
     extract_imports(&mut g, &lang, root, src, file, file_id);
 
@@ -912,5 +913,23 @@ fn m(x: i32) -> i32 {
         let src = "use crate::a::b;\nmod m { use crate::a::b; }\n";
         let g = extract("src/x.rs", src);
         assert_eq!(import_names(&g), vec!["crate::a::b"]);
+    }
+
+    #[test]
+    fn suppression_markers_come_only_from_comments() {
+        let src = "// stratify-ignore: dead_code\nfn a() {}\nfn b() { let s = \"stratify-ignore: complexity\"; }\n/* stratify-ignore: duplication */\nfn c() {}\n";
+        let g = extract("src/x.rs", src);
+        let got: Vec<(usize, usize, Vec<String>)> = g
+            .suppressions()
+            .iter()
+            .map(|s| (s.start_line, s.end_line, s.rules.clone()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (1, 1, vec!["dead_code".to_string()]),
+                (4, 4, vec!["duplication".to_string()])
+            ]
+        );
     }
 }

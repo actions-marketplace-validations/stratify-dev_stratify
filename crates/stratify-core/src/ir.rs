@@ -102,3 +102,14 @@ mod tests {
         assert_eq!(sym, back);
     }
 }
+
+/// A `stratify-ignore: <rules>` marker found inside a comment. Lines are
+/// 1-based and inclusive. Adapters record these; analyses never look for
+/// comment syntax themselves.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Suppression {
+    pub file: String,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub rules: Vec<String>,
+}

@@ -370,6 +370,7 @@ pub(crate) fn extract(file: &str, src: &str) -> IrGraph {
     });
 
     walk::tokenize(&mut g, root, src, file, &normalize_rules());
+    walk::collect_suppressions(&mut g, root, src, file, &["comment"]);
 
     extract_declarations(&mut g, root, src, file, file_id);
 
@@ -549,6 +550,24 @@ mod tests {
                 .any(|(from, name)| *from == caller_id && name == "external"),
             "expected unresolved call (caller, external); got {:?}",
             g.unresolved_calls()
+        );
+    }
+
+    #[test]
+    fn suppression_markers_come_only_from_comments() {
+        let src = "# stratify-ignore: dead_code\ndef a\n  s = \"stratify-ignore: complexity\"\nend\n=begin\nstratify-ignore: duplication\n=end\ndef c\nend\n";
+        let g = extract("a.rb", src);
+        let got: Vec<(usize, usize, Vec<String>)> = g
+            .suppressions()
+            .iter()
+            .map(|s| (s.start_line, s.end_line, s.rules.clone()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (1, 1, vec!["dead_code".to_string()]),
+                (5, 7, vec!["duplication".to_string()])
+            ]
         );
     }
 }

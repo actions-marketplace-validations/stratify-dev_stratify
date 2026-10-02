@@ -177,6 +177,7 @@ pub fn analyze_repo_with_stats(root: &Path) -> std::io::Result<(Report, ScanStat
         &graph,
         &boundary_config,
     ));
+    let (findings, _suppressed) = stratify_analysis::suppress::apply(&graph, findings);
     let stats = scan_stats(&graph, start.elapsed().as_millis() as u64);
     Ok((Report::new(findings), stats))
 }
