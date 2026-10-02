@@ -25,7 +25,9 @@ jobs:
         run: cargo test --locked
 
       - name: Script tests
-        run: bash scripts/test_action_run.sh
+        run: |
+          bash scripts/test_action_run.sh
+          python3 -m unittest discover -s scripts -p 'test_*.py'
 
       # dogfood: run stratify on its own sample fixtures
       - name: Dogfood
