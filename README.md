@@ -189,6 +189,20 @@ The step fails the job when at least one finding meets or exceeds the `fail-on` 
 | `path` | `.` | Directory to analyze. |
 | `fail-on` | `warning` | Minimum severity that fails the step: `never`, `info`, `warning`, or `error`. |
 | `format` | `human` | Output format: `human`, `json`, or `sarif`. |
+| `baseline` | `''` | Baseline file. Only findings absent from it are reported and gated. |
+
+Paths in `path` and `baseline` may contain spaces. Both are relative to the job's working directory. The Action passes inputs as environment variables, never as shell text.
+
+## Adopt on an existing codebase (baseline)
+
+Record today's findings once, commit the file, and gate only on new ones:
+
+```sh
+stratify check . --write-baseline stratify-baseline.json
+stratify check . --baseline stratify-baseline.json --fail-on warning
+```
+
+A baselined finding stays baselined when code above it moves. A missing or unreadable baseline file exits with code 2, so a broken path never passes the gate.
 
 ## SARIF and GitHub code scanning
 

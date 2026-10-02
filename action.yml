@@ -15,6 +15,9 @@ inputs:
   format:
     description: "Output format. One of: human, json, sarif."
     default: human
+  baseline:
+    description: "Optional path to a baseline file written by `stratify check --write-baseline`. When set, only findings absent from it are reported and gated. Relative to the job's working directory."
+    default: ''
 
 runs:
   using: composite
@@ -41,7 +44,9 @@ runs:
 
     - name: Run quality gate
       shell: bash
-      run: |
-        stratify check "${{ inputs.path }}" \
-          --fail-on "${{ inputs.fail-on }}" \
-          --format "${{ inputs.format }}"
+      env:
+        STRATIFY_PATH: ${{ inputs.path }}
+        STRATIFY_FAIL_ON: ${{ inputs.fail-on }}
+        STRATIFY_FORMAT: ${{ inputs.format }}
+        STRATIFY_BASELINE: ${{ inputs.baseline }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/action-run.sh"

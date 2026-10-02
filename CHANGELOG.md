@@ -25,10 +25,18 @@ backward-compatible).
 - Comment suppression: a `stratify-ignore: <rule>` comment on a finding's
   line or the line above hides that rule's finding there. Only real
   comments count; the same text in a string literal is ignored.
+- `--write-baseline <file>` and `--baseline <file>`: record current findings,
+  then report and gate only new ones. The GitHub Action takes a `baseline`
+  input.
 
 ### Changed
 - The Rust adapter records `use` declarations as imports, and a Rust file's
   module key is now its own path instead of its parent directory.
+
+### Fixed
+- The GitHub Action passes its inputs as environment variables instead of
+  interpolating them into the shell script, so a path with spaces or shell
+  syntax is passed through literally.
 
 ## [0.6.0] - 2026-09-01
 

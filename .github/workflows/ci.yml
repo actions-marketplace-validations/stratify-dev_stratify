@@ -24,6 +24,9 @@ jobs:
       - name: Tests
         run: cargo test --locked
 
+      - name: Script tests
+        run: bash scripts/test_action_run.sh
+
       # dogfood: run stratify on its own sample fixtures
       - name: Dogfood
         run: cargo run -p stratify-cli -- check crates/stratify-cli/tests/sample-java

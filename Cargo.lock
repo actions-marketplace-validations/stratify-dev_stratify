@@ -1184,6 +1184,7 @@ dependencies = [
  "globset",
  "ignore",
  "insta",
+ "serde",
  "serde_json",
  "stratify-analysis",
  "stratify-core",
