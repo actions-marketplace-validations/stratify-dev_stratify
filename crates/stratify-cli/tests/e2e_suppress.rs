@@ -29,3 +29,13 @@ fn marker_above_a_decorator_suppresses_the_function() {
         "stdout: {stdout}"
     );
 }
+
+#[test]
+fn marker_above_the_import_suppresses_a_boundary_finding() {
+    let stdout = scan("tests/sample-boundarysuppress");
+    assert_eq!(
+        stdout.matches("\"rule\": \"boundary\"").count(),
+        0,
+        "stdout: {stdout}"
+    );
+}

@@ -10,6 +10,7 @@ use stratify_core::{Confidence, Finding, IrGraph, Severity};
 pub fn analyze(graph: &IrGraph) -> Vec<Finding> {
     let adj = crate::imports::fqn_import_graph(graph);
     let spans = crate::imports::fqn_spans(graph);
+    let import_spans = crate::imports::fqn_import_spans(graph);
 
     // DFS back-edge detection. Colors: 0 = white, 1 = gray (on stack), 2 = black.
     let mut color: HashMap<String, u8> = HashMap::new();
@@ -41,7 +42,17 @@ pub fn analyze(graph: &IrGraph) -> Vec<Finding> {
             end_byte: 0,
             start_line: 1,
         };
-        let span = spans.get(&cycle[0]).cloned().unwrap_or(fallback.clone());
+        // The span of the import that makes `cycle[i]` depend on its successor,
+        // so a suppression marker can sit on that line.
+        let edge_span = |i: usize| {
+            let next = &cycle[(i + 1) % cycle.len()];
+            import_spans
+                .get(&(cycle[i].clone(), next.clone()))
+                .or_else(|| spans.get(&cycle[i]))
+                .cloned()
+                .unwrap_or_else(|| fallback.clone())
+        };
+        let span = edge_span(0);
         // One unconfirmed (re-export) edge makes the whole cycle unconfirmed.
         let unconfirmed = (0..cycle.len()).any(|i| {
             let next = &cycle[(i + 1) % cycle.len()];
@@ -59,10 +70,9 @@ pub fn analyze(graph: &IrGraph) -> Vec<Finding> {
             span,
             confidence,
         );
-        for (i, fqn) in cycle.iter().enumerate() {
-            let step_span = spans.get(fqn).cloned().unwrap_or(fallback.clone());
+        for i in 0..cycle.len() {
             finding = finding.with_path_step(
-                step_span,
+                edge_span(i),
                 "cycle_member",
                 format!("imports {}", files[(i + 1) % files.len()]),
             );
@@ -146,9 +156,9 @@ mod tests {
         let a = file_sym(&mut g, "a.rb");
         let b = file_sym(&mut g, "b.rb");
         let c = file_sym(&mut g, "c.rb");
-        add_import(&mut g, a, "b.rb");
-        add_import(&mut g, b, "c.rb");
-        add_import(&mut g, c, "a.rb");
+        add_import_at(&mut g, a, "b.rb", "a.rb", 1, Confidence::Certain);
+        add_import_at(&mut g, b, "c.rb", "b.rb", 1, Confidence::Certain);
+        add_import_at(&mut g, c, "a.rb", "c.rb", 1, Confidence::Certain);
         let f = &analyze(&g)[0];
         let files: Vec<&str> = f.path.iter().map(|r| r.span.file.as_str()).collect();
         assert_eq!(files, vec!["a.rb", "b.rb", "c.rb"]);
@@ -221,5 +231,31 @@ mod tests {
             .reasons
             .iter()
             .all(|r| !r.contains("re-exporting module")));
+    }
+
+    #[test]
+    fn cycle_points_at_each_import_line() {
+        let mut g = IrGraph::new();
+        let a = file_sym(&mut g, "a.rs");
+        let b = file_sym(&mut g, "b.rs");
+        add_import_at(&mut g, a, "b.rs", "a.rs", 3, Confidence::Certain);
+        add_import_at(&mut g, b, "a.rs", "b.rs", 7, Confidence::Certain);
+        let f = &analyze(&g)[0];
+        assert_eq!((f.span.file.as_str(), f.span.start_line), ("a.rs", 3));
+        assert_eq!(f.path[0].span.start_line, 3);
+        assert_eq!(f.path[1].span.file, "b.rs");
+        assert_eq!(f.path[1].span.start_line, 7);
+    }
+
+    #[test]
+    fn cycle_uses_the_earliest_import_between_a_pair() {
+        let mut g = IrGraph::new();
+        let a = file_sym(&mut g, "a.rs");
+        let b = file_sym(&mut g, "b.rs");
+        add_import_at(&mut g, a, "b.rs", "a.rs", 9, Confidence::Certain);
+        add_import_at(&mut g, a, "b.rs", "a.rs", 2, Confidence::Certain);
+        add_import_at(&mut g, b, "a.rs", "b.rs", 1, Confidence::Certain);
+        let f = &analyze(&g)[0];
+        assert_eq!(f.span.start_line, 2);
     }
 }

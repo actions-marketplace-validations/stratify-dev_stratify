@@ -154,6 +154,7 @@ pub fn analyze(graph: &IrGraph, config: &BoundaryConfig) -> Vec<Finding> {
 
     let adj = crate::imports::file_import_graph(graph);
     let span_of = crate::imports::file_spans(graph);
+    let import_spans = crate::imports::file_import_spans(graph);
 
     let mut findings = Vec::new();
     for (src, targets) in &adj {
@@ -165,12 +166,18 @@ pub fn analyze(graph: &IrGraph, config: &BoundaryConfig) -> Vec<Finding> {
                 continue;
             };
             if forbidden.contains(&(src_layer.to_string(), tgt_layer.to_string())) {
-                let span = span_of.get(src).cloned().unwrap_or(Span {
-                    file: src.clone(),
-                    start_byte: 0,
-                    end_byte: 0,
-                    start_line: 1,
-                });
+                // Anchor at the offending import, so a suppression marker can sit
+                // on or above that line.
+                let span = import_spans
+                    .get(&(src.clone(), tgt.clone()))
+                    .or_else(|| span_of.get(src))
+                    .cloned()
+                    .unwrap_or(Span {
+                        file: src.clone(),
+                        start_byte: 0,
+                        end_byte: 0,
+                        start_line: 1,
+                    });
                 let tgt_span = span_of.get(tgt).cloned().unwrap_or(Span {
                     file: tgt.clone(),
                     start_byte: 0,
@@ -406,5 +413,23 @@ mod tests {
         let findings = analyze(&g, &config());
         assert_eq!(findings[0].severity, Severity::Warning);
         assert_eq!(findings[0].confidence, Confidence::Certain);
+    }
+
+    #[test]
+    fn violation_points_at_the_import_line() {
+        let mut g = IrGraph::new();
+        let m = file_sym(&mut g, "models/user.rb");
+        file_sym(&mut g, "controllers/users.rb");
+        add_import_at(
+            &mut g,
+            m,
+            "controllers/users.rb",
+            "models/user.rb",
+            4,
+            Confidence::Certain,
+        );
+        let findings = analyze(&g, &config());
+        assert_eq!(findings[0].span.file, "models/user.rb");
+        assert_eq!(findings[0].span.start_line, 4);
     }
 }

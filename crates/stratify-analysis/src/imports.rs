@@ -25,6 +25,52 @@ fn add_edge(adj: &mut ImportGraph, src: &str, tgt: &str, confidence: Confidence)
 /// Self-edges are excluded. Each edge carries the strongest confidence of the
 /// `Imports` references behind it.
 pub fn file_import_graph(graph: &IrGraph) -> ImportGraph {
+    let export = file_exports(graph);
+
+    let mut adj: ImportGraph = BTreeMap::new();
+    for s in graph.symbols() {
+        if matches!(s.kind, SymbolKind::File) {
+            adj.entry(s.span.file.clone()).or_default();
+        }
+    }
+
+    for (src, tgt, confidence, _) in file_edges(graph, &export) {
+        add_edge(&mut adj, &src, &tgt, confidence);
+    }
+    adj
+}
+
+/// Every resolved file-to-file `Imports` edge with its confidence and the span
+/// of the reference that creates it.
+fn file_edges(
+    graph: &IrGraph,
+    export: &HashMap<&str, String>,
+) -> Vec<(String, String, Confidence, Span)> {
+    let mut edges = Vec::new();
+    for r in graph.references() {
+        if !matches!(r.kind, RefKind::Imports) {
+            continue;
+        }
+        let (Some(from), Some(to)) = (graph.symbol(r.from), graph.symbol(r.to)) else {
+            continue;
+        };
+        let src_file = &from.span.file;
+        if let Some(target_file) = export.get(to.name.as_str()) {
+            if target_file != src_file {
+                edges.push((
+                    src_file.clone(),
+                    target_file.clone(),
+                    r.confidence,
+                    r.span.clone(),
+                ));
+            }
+        }
+    }
+    edges
+}
+
+/// File-level export map: File/Class/Module fqn -> owning file path.
+fn file_exports(graph: &IrGraph) -> HashMap<&str, String> {
     let mut export: HashMap<&str, String> = HashMap::new();
     for s in graph.symbols() {
         if matches!(
@@ -36,29 +82,32 @@ pub fn file_import_graph(graph: &IrGraph) -> ImportGraph {
                 .or_insert_with(|| s.span.file.clone());
         }
     }
+    export
+}
 
-    let mut adj: ImportGraph = BTreeMap::new();
-    for s in graph.symbols() {
-        if matches!(s.kind, SymbolKind::File) {
-            adj.entry(s.span.file.clone()).or_default();
+/// For each (importing file, imported file) pair, the span of the earliest
+/// `Imports` reference that creates the edge. Findings anchor here so a
+/// suppression marker can sit on or above the import line.
+pub fn file_import_spans(graph: &IrGraph) -> HashMap<(String, String), Span> {
+    earliest_spans(file_edges(graph, &file_exports(graph)))
+}
+
+/// Same as [`file_import_spans`], keyed by fqn node like [`fqn_import_graph`].
+pub fn fqn_import_spans(graph: &IrGraph) -> HashMap<(String, String), Span> {
+    earliest_spans(fqn_edges(graph))
+}
+
+fn earliest_spans(
+    edges: Vec<(String, String, Confidence, Span)>,
+) -> HashMap<(String, String), Span> {
+    let mut out: HashMap<(String, String), Span> = HashMap::new();
+    for (src, tgt, _, span) in edges {
+        let slot = out.entry((src, tgt)).or_insert_with(|| span.clone());
+        if (span.start_line, span.start_byte) < (slot.start_line, slot.start_byte) {
+            *slot = span;
         }
     }
-
-    for r in graph.references() {
-        if !matches!(r.kind, RefKind::Imports) {
-            continue;
-        }
-        let (Some(from), Some(to)) = (graph.symbol(r.from), graph.symbol(r.to)) else {
-            continue;
-        };
-        let src_file = &from.span.file;
-        if let Some(target_file) = export.get(to.name.as_str()) {
-            if target_file != src_file {
-                add_edge(&mut adj, src_file, target_file, r.confidence);
-            }
-        }
-    }
-    adj
+    out
 }
 
 /// Map each file to a representative span (its File symbol's span).
@@ -78,6 +127,19 @@ pub fn file_spans(graph: &IrGraph) -> HashMap<String, Span> {
 /// Files sharing an fqn (e.g. Go package files) collapse into one node. For
 /// languages where fqn is 1:1 with the file, this matches `file_import_graph`.
 pub fn fqn_import_graph(graph: &IrGraph) -> ImportGraph {
+    let mut adj: ImportGraph = BTreeMap::new();
+    for s in graph.symbols() {
+        if matches!(s.kind, SymbolKind::File) {
+            adj.entry(s.fqn.clone()).or_default();
+        }
+    }
+    for (src, tgt, confidence, _) in fqn_edges(graph) {
+        add_edge(&mut adj, &src, &tgt, confidence);
+    }
+    adj
+}
+
+fn fqn_edges(graph: &IrGraph) -> Vec<(String, String, Confidence, Span)> {
     // file path -> that file's own fqn (its graph node key).
     let file_fqn_by_path: HashMap<&str, &str> = graph
         .symbols()
@@ -114,12 +176,7 @@ pub fn fqn_import_graph(graph: &IrGraph) -> ImportGraph {
         .map(|s| (s.id, s.fqn.clone()))
         .collect();
 
-    let mut adj: ImportGraph = BTreeMap::new();
-    for s in graph.symbols() {
-        if matches!(s.kind, SymbolKind::File) {
-            adj.entry(s.fqn.clone()).or_default();
-        }
-    }
+    let mut edges = Vec::new();
     for r in graph.references() {
         if !matches!(r.kind, RefKind::Imports) {
             continue;
@@ -133,11 +190,16 @@ pub fn fqn_import_graph(graph: &IrGraph) -> ImportGraph {
         };
         if let Some(&owner_fqn) = export.get(to.name.as_str()) {
             if owner_fqn != src_fqn.as_str() {
-                add_edge(&mut adj, src_fqn, owner_fqn, r.confidence);
+                edges.push((
+                    src_fqn.clone(),
+                    owner_fqn.to_string(),
+                    r.confidence,
+                    r.span.clone(),
+                ));
             }
         }
     }
-    adj
+    edges
 }
 
 /// fqn -> a representative File span (first File with that fqn), for findings.

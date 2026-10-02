@@ -164,7 +164,7 @@ def after_commit_hook
 end
 ```
 
-The marker counts only inside a comment: `//`, `/* */`, and `///` in Java, TypeScript, Go, and Rust, and `#` in Ruby and Python, plus Ruby's `=begin`/`=end`. The same text inside a string literal or a Python docstring does nothing. A block comment counts when it ends on the line above the finding.
+The marker counts only inside a comment: `//`, `/* */`, and `///` in Java, TypeScript, Go, and Rust, and `#` in Ruby and Python, plus Ruby's `=begin`/`=end`. The same text inside a string literal or a Python docstring does nothing. A block comment counts when it ends on the line above the finding. Cycle and boundary findings point at the import line, so put the marker on or above the import.
 
 Rule ids: `dead_code`, `duplication`, `complexity`, `hotspot`, `cycle`, `boundary`. A finding's `rule` field in JSON output shows its id.
 
