@@ -17,11 +17,11 @@ Measured against v0.6.0, not assumed.
 | Area | State | Source |
 |------|-------|--------|
 | Analyses | Six: dead code, duplication, complexity, churn hotspots, cycles, layer boundaries | `crates/stratify-analysis/src/` |
-| Languages | Java, Ruby, TypeScript, Python, Go get six of six. Rust gets four of six | `README.md` |
+| Languages | All six languages get six of six | `README.md` |
 | IR | Symbols, references, normalized tokens, one complexity number per function. No types, no statements, no control flow | `crates/stratify-core/src/ir.rs` |
 | Call resolution | Cross-file calls match by bare function name and land at `Likely` | `crates/stratify-analysis/src/resolve.rs` |
-| Findings | Five fields: rule, severity, message, span, confidence. Rule is a free string | `crates/stratify-core/src/finding.rs` |
-| Gate | `--fail-on` severity threshold. No baseline, no diff-only mode, no line-level suppression | `crates/stratify-cli/src/main.rs` |
+| Findings | Five fields: rule, severity, message, span, confidence, plus optional `related`, `path`, and `reasons`. Rule is a free string | `crates/stratify-core/src/finding.rs` |
+| Gate | `--fail-on` severity threshold, `--baseline` new-findings gate, `stratify-ignore` comment suppression | `crates/stratify-cli/src/main.rs` |
 | LSP | Rescans the whole workspace on every open and save | `crates/stratify-cli/src/lsp.rs` |
 | Judgment layer | `stratify-judge` ships one judge, for `dead_code` | sibling repo |
 
@@ -66,7 +66,22 @@ Settle these before Phase 2 starts.
 
 ## Phase 0: Baseline and measurement
 
-Objective: know the precision and speed of each existing rule before building on them.
+Status: in progress.
+
+Shipped:
+
+- Rust cycles and layer boundaries.
+- The precision tool, `scripts/precision.py`.
+- The first labels. The tool reports `dead_code` for Rust as tp 0, fp 15, unlabelled 0, repos 1, coverage 100%, precision 0%, status `insufficient`. The footer reads: `gate-ready: 0 of 36 rule-language pairs. Precision targets apply only to gate-ready pairs.`
+- The benchmark tool, `scripts/bench.py`, and the self-scan row in `docs/benchmarks.md`: 48 files, 10,896 lines, 0.34 seconds wall, 34.5 MB peak RSS.
+
+Remaining:
+
+- Labelled repos until all 36 rule-language pairs are gate-ready.
+- The large-repo benchmark row. The Kubernetes v1.31.0 scan is not measured. It did not finish within 30 minutes. The suspected cause is the O(nodes x references) reachability loop in `crates/stratify-analysis/src/deadcode.rs`. This blocks the large-repo benchmark and the scan-time budget.
+- The scan-time budget, set from that row.
+
+Phase 0 stays open until both remaining measurements exist.
 
 Work:
 
@@ -90,6 +105,8 @@ Exit:
 - A scan-time and memory baseline exists for one repo above 500k lines.
 
 ## Phase 1: Findings model and adoption basics
+
+Status: shipped so far: rule registry, evidence fields with the SARIF mapping, comment suppression, and the baseline gate with the hardened Action. The judge-compatibility exit test is not yet run. It needs a run of `stratify-judge` against a report with evidence fields.
 
 Objective: give findings enough structure to explain flow results, and give teams a way to adopt a new rule without a wall of old findings.
 
