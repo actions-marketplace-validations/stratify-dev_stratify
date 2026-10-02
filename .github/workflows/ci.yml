@@ -24,6 +24,15 @@ jobs:
       - name: Tests
         run: cargo test --locked
 
+      - name: SARIF schema validation
+        run: |
+          pip install jsonschema==4.*
+          cargo build -q -p stratify-cli
+          for d in sample-rustcycle sample-dup sample-boundary sample-java sample-complex sample-suppress; do
+            target/debug/stratify check crates/stratify-cli/tests/$d --format sarif > /tmp/$d.sarif
+          done
+          python3 scripts/validate_sarif.py /tmp/*.sarif
+
       - name: Script tests
         run: |
           bash scripts/test_action_run.sh
