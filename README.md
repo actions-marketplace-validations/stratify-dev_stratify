@@ -123,7 +123,7 @@ stratify check . --fail-on warning
 
 ## The six analyses
 
-They all run in a single pass. Java, Ruby, TypeScript, Python, and Go get all six; Rust gets the first four today (see below).
+They all run in a single pass. Java, Ruby, TypeScript, Python, Go, and Rust get all six.
 
 | Analysis | What it finds |
 |----------|---------------|
@@ -144,7 +144,7 @@ With no `stratify.toml`, Stratify guesses `application` mode from an explicit "n
 
 ## Six languages, one engine
 
-Java, Ruby, TypeScript, Python, and Go each get the full set of six analyses. Rust gets dead code, duplication, complexity, and churn hotspots today. Dependency cycles and layer boundaries for Rust need module/`use` resolution, which is on the roadmap. Adding a language adds one adapter and changes no analysis code, because every analysis reads the shared model, not the source.
+All six languages get all six analyses. Rust import resolution follows `crate::`, `self::`, `super::`, and paths that start with the name of a crate in the scan. Paths into external crates form no edge. Adding a language adds one adapter and changes no analysis code, because every analysis reads the shared model, not the source.
 
 ## Output formats
 
@@ -294,4 +294,4 @@ The diagram above is the whole architecture. tree-sitter turns source into the U
 
 ## Status
 
-Six analyses across six languages (Rust covers four today, with cycles and boundaries pending import resolution), exposed through every surface: CLI, JSON, SARIF, GitHub Action, MCP, LSP, and OpenTelemetry export. Stratify lives at [github.com/stratify-dev/stratify](https://github.com/stratify-dev/stratify).
+Six analyses across six languages, exposed through every surface: CLI, JSON, SARIF, GitHub Action, MCP, LSP, and OpenTelemetry export. Stratify lives at [github.com/stratify-dev/stratify](https://github.com/stratify-dev/stratify).

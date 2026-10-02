@@ -1,0 +1,7 @@
+[layers]
+domain = ["src/domain/**"]
+api = ["src/api/**"]
+
+[[forbid]]
+from = "domain"
+to = "api"

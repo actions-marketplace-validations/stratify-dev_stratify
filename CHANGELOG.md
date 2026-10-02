@@ -9,6 +9,11 @@ backward-compatible).
 
 ## [Unreleased]
 
+### Added
+- Dependency cycles and layer boundaries for Rust. Every language now gets
+  all six analyses. Imports resolve through `crate::`, `self::`, `super::`,
+  and crate names read from each `Cargo.toml` in the scan.
+
 ### Changed
 - The Rust adapter records `use` declarations as imports, and a Rust file's
   module key is now its own path instead of its parent directory.

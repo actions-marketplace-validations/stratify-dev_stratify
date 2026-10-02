@@ -108,6 +108,7 @@ pub fn analyze_repo_with_stats(root: &Path) -> std::io::Result<(Report, ScanStat
 
     let ignore_globs = load_ignore_globs(root);
     let mut graph = IrGraph::new();
+    let mut rust_crates: Vec<stratify_analysis::resolve::RustCrate> = Vec::new();
     for entry in WalkBuilder::new(root).build() {
         let entry = match entry {
             Ok(e) => e,
@@ -117,6 +118,19 @@ pub fn analyze_repo_with_stats(root: &Path) -> std::io::Result<(Report, ScanStat
             continue;
         }
         let path = entry.path();
+        if path.file_name().and_then(|n| n.to_str()) == Some("Cargo.toml") {
+            let rel = path
+                .strip_prefix(root)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .to_string();
+            if !ignore_globs.is_match(&rel) {
+                if let Some(c) = rust_crate_of(root, path) {
+                    rust_crates.push(c);
+                }
+            }
+            continue;
+        }
         let ext = match path.extension().and_then(|e| e.to_str()) {
             Some(e) => e,
             None => continue,
@@ -141,6 +155,7 @@ pub fn analyze_repo_with_stats(root: &Path) -> std::io::Result<(Report, ScanStat
 
     stratify_analysis::resolve::cross_file_calls(&mut graph);
     stratify_analysis::resolve::go_imports(&mut graph);
+    stratify_analysis::resolve::rust_imports(&mut graph, &rust_crates);
     stratify_analysis::resolve::promote_intra_file_calls(&mut graph);
 
     let mut findings = deadcode::analyze(&graph, load_dead_code_mode(root));
@@ -169,6 +184,23 @@ pub fn analyze_repo_with_stats(root: &Path) -> std::io::Result<(Report, ScanStat
 /// Convenience wrapper for callers that only need the Report (mcp, lsp).
 pub fn analyze_repo(root: &Path) -> std::io::Result<Report> {
     Ok(analyze_repo_with_stats(root)?.0)
+}
+
+/// Read a Cargo manifest's `[package] name` and pair it with the package's
+/// `src` directory (relative to the scan root). A manifest with no
+/// `[package]` (a bare `[workspace]` root) yields None. A custom
+/// `[lib] name` or `path` is not read.
+fn rust_crate_of(root: &Path, manifest: &Path) -> Option<stratify_analysis::resolve::RustCrate> {
+    let text = std::fs::read_to_string(manifest).ok()?;
+    let doc: toml::Value = text.parse().ok()?;
+    let name = doc.get("package")?.get("name")?.as_str()?.replace('-', "_");
+    let src = manifest.parent()?.join("src");
+    let src_dir = src
+        .strip_prefix(root)
+        .unwrap_or(&src)
+        .to_string_lossy()
+        .to_string();
+    Some(stratify_analysis::resolve::RustCrate { name, src_dir })
 }
 
 /// Load `[ignore] paths` globs from `stratify.toml` at the scan root.
@@ -470,6 +502,21 @@ mod tests {
             autodetect_dead_code_mode(&dir),
             deadcode::DeadCodeMode::Library
         );
+    }
+    #[test]
+    fn rust_crate_of_reads_package_name_and_src_dir() {
+        let dir = temp_dir("rust-crate-of");
+        std::fs::create_dir_all(dir.join("crates/my-core")).unwrap();
+        std::fs::write(
+            dir.join("crates/my-core/Cargo.toml"),
+            "[package]\nname = \"my-core\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("Cargo.toml"), "[workspace]\nmembers = []\n").unwrap();
+        let c = rust_crate_of(&dir, &dir.join("crates/my-core/Cargo.toml")).unwrap();
+        assert_eq!(c.name, "my_core");
+        assert_eq!(c.src_dir, "crates/my-core/src");
+        assert!(rust_crate_of(&dir, &dir.join("Cargo.toml")).is_none());
     }
 }
 
