@@ -49,6 +49,19 @@ Checked in the judge repo at commit 3a6e9f0, under `crates/stratify-judge-core/s
 
 With and without the fields, the judge sends the same prompts.
 
+## Request capture
+
+The request bodies confirm the code reading directly. No real API call was made.
+
+Method:
+
+1. Build the full report with `target/release/stratify check . --format json`. Derive the stripped copy by removing `related`, `path` and `reasons` from every finding.
+2. Run a local HTTP server on 127.0.0.1:18765. For each POST it writes the request body to a numbered file and returns HTTP 500.
+3. Run the judge once per variant: `TYPESAFE_API_KEY=dummy-capture stratify-judge --root . --input <variant>.json --no-cache --model jev-latest --base-url http://127.0.0.1:18765 --format json`. The key is a dummy value.
+4. Parse each captured body as JSON, dump it with sorted keys, and sort the resulting list. Compare the two variants.
+
+Result (stratify release build at 197d25e, judge 3a6e9f0, 2026-10-02): each variant produced 32 request bodies, from 8 requests plus retries after the 500 responses. The two sorted sets are identical. Every request the judge sends is the same with or without the evidence fields. The run 3 changed rows are therefore model nondeterminism, not an effect of the evidence.
+
 ## Reading the result
 
 Both variants send identical prompts, so any verdict difference is model noise. That covers the changed rows in runs 1 and 3. The changed rows in run 3 are the two new test helpers, where the stripped runs agreed with each other and the evidence run differed. That pattern is what noise looks like on borderline findings, and the identical prompts rule out the evidence fields as the cause. Run 2 had 0 changed.
