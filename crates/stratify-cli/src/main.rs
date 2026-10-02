@@ -110,6 +110,12 @@ fn main() -> ExitCode {
                 }
             };
 
+            for (file, line, id) in &stats.unknown_suppression_rules {
+                eprintln!(
+                    "warning: {file}:{line}: unknown rule id `{id}` in stratify-ignore marker"
+                );
+            }
+
             if print_stats {
                 eprintln!(
                     "stratify-stats {}",

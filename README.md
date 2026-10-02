@@ -166,7 +166,7 @@ stratify check . --stats
 
 ## Suppress a finding
 
-Put `stratify-ignore: <rule>` in a comment on the finding's line or the line above. Name one rule or a comma-separated list. A rule id is required, so a suppression never hides more than you meant. Text after the first word of each item is ignored, so you can give a reason.
+Put `stratify-ignore: <rule>` in a comment on the finding's line or the line above. Name one rule or a comma-separated list. A rule id is required, so a suppression never hides more than you meant. Text after the first word of each item is ignored, so you can give a reason. An unknown rule id prints a warning and suppresses nothing.
 
 ```ruby
 # stratify-ignore: dead_code -- called by the framework

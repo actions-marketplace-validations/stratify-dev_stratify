@@ -34,6 +34,8 @@ pub struct ScanStats {
     pub lines_scanned: u64,
     /// Source files an adapter handles but that could not be read or parsed.
     pub files_skipped: u64,
+    /// Rule ids named in stratify-ignore markers that no rule matches, as (file, line, id).
+    pub unknown_suppression_rules: Vec<(String, usize, String)>,
     pub functions: u64,
     pub complexity_max: u32,
     pub complexity_mean: f64,
@@ -83,6 +85,7 @@ pub fn scan_stats(graph: &IrGraph, duration_ms: u64, lines_scanned: u64) -> Scan
         files_scanned,
         lines_scanned,
         files_skipped: 0,
+        unknown_suppression_rules: Vec::new(),
         functions,
         complexity_max,
         complexity_mean,
@@ -201,6 +204,16 @@ pub fn analyze_repo_with_stats(root: &Path) -> std::io::Result<(Report, ScanStat
     let (findings, _suppressed) = stratify_analysis::suppress::apply(&graph, findings);
     let mut stats = scan_stats(&graph, start.elapsed().as_millis() as u64, lines_scanned);
     stats.files_skipped = files_skipped;
+    stats.unknown_suppression_rules = graph
+        .suppressions()
+        .iter()
+        .flat_map(|s| {
+            s.rules
+                .iter()
+                .filter(|r| stratify_core::rule::rule(r).is_none())
+                .map(|r| (s.file.clone(), s.start_line, r.clone()))
+        })
+        .collect();
     Ok((Report::new(findings), stats))
 }
 

@@ -10,6 +10,8 @@ backward-compatible).
 ## [Unreleased]
 
 ### Added
+- `stratify check` warns on stderr when a `stratify-ignore` marker names an
+  unknown rule id. The marker still suppresses nothing for that id.
 - `--stats` prints scan statistics (files, lines, functions, languages,
   duration) as one `stratify-stats` JSON line on stderr.
 - Dependency cycles and layer boundaries for Rust. Every language now gets
