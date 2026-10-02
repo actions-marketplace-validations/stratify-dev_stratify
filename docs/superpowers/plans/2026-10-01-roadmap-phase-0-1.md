@@ -2,11 +2,16 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Give Rust the two missing analyses, measure precision and speed, and give findings evidence, rule metadata, suppression, and a baseline gate.
+**Goal:** Give Rust the two missing analyses. Ship Phase 1: findings evidence, rule metadata, comment suppression, and a baseline gate. Build Phase 0's measurement tools and record their first data. This plan does not close Phase 0. Phase 0 closes when every rule-language pair is gate-ready in the labelled corpus and `docs/benchmarks.md` holds a measured run on a repo above 500k lines.
 
-**Architecture:** Rust `use` paths become `Dependency` symbols in the Rust adapter. A repo-wide resolver in `stratify-analysis` rewrites them to file paths, the same way `go_imports` works for Go. The six existing analyses then see Rust import edges with no analysis change. Phase 1 adds optional fields to `Finding`, a static rule registry in `stratify-core`, and two post-analysis filters in `stratify-cli` (suppression comments, baseline). Measurement lives in `corpus/` and `scripts/`.
+**Architecture:**
+- **Rust imports.** The Rust adapter turns `use` paths into `Dependency` symbols. A repo-wide resolver in `stratify-analysis` rewrites them to file paths, the same way `go_imports` works for Go. The six existing analyses then see Rust import edges with no analysis change.
+- **Phase 1 types.** Phase 1 adds optional evidence fields to `Finding` and a static rule registry in `stratify-core`.
+- **Suppression.** Each adapter records suppression markers it finds in tree-sitter comment nodes into the IR. A language-blind filter in `stratify-analysis` applies them.
+- **Baseline.** A baseline filter lives in `stratify-cli`.
+- **Measurement.** Corpus data lives in `corpus/`. The measurement scripts live in `scripts/` and rely on `stratify check --stats`.
 
-**Tech Stack:** Rust 2021 workspace, tree-sitter 0.24 and tree-sitter-rust 0.23, serde, clap 4, toml 0.8, Python 3 standard library for the scripts.
+**Tech Stack:** Rust 2021 workspace, tree-sitter 0.24 and the six 0.23 grammars, serde, clap 4, toml 0.8, Python 3 standard library for the scripts, bash for the Action wrapper.
 
 **Spec:** `docs/roadmap-full-stack-static-analysis.md` (Phase 0 and Phase 1 sections).
 
@@ -19,14 +24,18 @@
 - Every change passes `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test --locked` (the CI gate in `.github/workflows/ci.yml`).
 - `cargo` lives at `~/.cargo/bin/cargo`. Run `export PATH="$HOME/.cargo/bin:$PATH"` before any cargo command.
 - Each user-visible change adds a line under `## [Unreleased]` in `CHANGELOG.md` (Task 1 creates the heading above `## [0.6.0]`).
-- Commit messages follow the repo style (`feat(scope): ...`, `fix(scope): ...`, `docs: ...`) and end with the line `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+- Commit messages follow the repo style: a `feat(scope): ...`, `fix(scope): ...`, or `docs: ...` subject line. The plan prescribes no trailer or co-author line.
 - Work on branch `roadmap-phase-0-1`. Never commit to `main`.
+- Status language:
+  - No document, commit, or changelog entry calls Phase 0 complete.
+  - Phase 0 closes only when two conditions hold. First, `scripts/precision.py` reports all 36 rule-language pairs `gate-ready`. Second, `docs/benchmarks.md` holds a measured large-repo row.
+  - Tasks 7 and 8 deliver tools plus initial data. Neither one is a Phase 0 sign-off.
 
 ## Review Focus
 
 1. `use super::*;` inside an inline `#[cfg(test)] mod tests { ... }` refers to the same file. Expected: no import edge. Test in Task 1.
 2. `use std::...`, `use serde::...`, and any crate outside the scan. Expected: no edge, no finding, no panic. Test in Task 2.
-3. A suppression comment naming a different rule. Expected: the finding stays. Test in Task 5.
+3. A `stratify-ignore:` marker inside a string literal or Python docstring on the line above a finding. Expected: no suppression, the finding stays. Tests in Task 5 (each adapter, and `e2e_suppress`).
 4. A baselined finding moves down ten lines after an edit above it. Expected: still baselined, gate passes. Test in Task 6.
 5. A `--baseline` path missing or holding invalid JSON. Expected: error on stderr, exit code 2, never a silent pass. Test in Task 6.
 
@@ -1145,14 +1154,28 @@ git commit -m "feat(core): add a rule registry and surface it in SARIF"
 - Modify: `CHANGELOG.md`
 
 **Interfaces:**
-- Consumes: Task 3 registry (not required, only for context).
+- Consumes: Task 3 registry (context only).
 - Produces in `stratify_core`:
   - `pub struct Related { pub span: Span, pub role: String, pub message: String }`
-  - `Finding` gains `pub related: Vec<Related>` and `pub reasons: Vec<String>`, both `#[serde(default, skip_serializing_if = "Vec::is_empty")]`.
+  - `Finding` gains three fields, each `#[serde(default, skip_serializing_if = "Vec::is_empty")]`:
+    - `pub related: Vec<Related>`: supporting locations, no order implied.
+    - `pub path: Vec<Related>`: ordered steps of a flow. Cycles use it now. Taint paths use it in Phase 5.
+    - `pub reasons: Vec<String>`: ordered reason chain, first reason first.
   - `Finding::new(rule: impl Into<String>, severity: Severity, message: impl Into<String>, span: Span, confidence: Confidence) -> Finding`
   - `Finding::with_related(self, span: Span, role: impl Into<String>, message: impl Into<String>) -> Finding`
+  - `Finding::with_path_step(self, span: Span, role: impl Into<String>, message: impl Into<String>) -> Finding`
   - `Finding::with_reason(self, reason: impl Into<String>) -> Finding`
   - `Related` re-exported from `stratify_core`.
+
+SARIF contract (the roadmap's Phase 1 item 2 states the same contract):
+
+| Finding field | SARIF 2.1.0 location in `runs[0].results[i]` | Emitted when |
+|---|---|---|
+| `related` | `relatedLocations[j]` = `{ "id": j, "physicalLocation": {...}, "message": { "text": role message } }`, `j` in `related` order | `related` is non-empty |
+| `path` | `codeFlows` = exactly one code flow holding exactly one thread flow. `threadFlows[0].locations[k]` = `{ "location": { "physicalLocation": {...}, "message": { "text": step message } }, "executionOrder": k + 1 }`, in `path` order. The array order is the flow order, and `executionOrder` repeats it so viewers that sort by it agree | `path` is non-empty |
+| `reasons` | `properties.reasons` = the full ordered array. When a code flow exists, `codeFlows[0].message.text` = the reasons joined with `"; "` | `reasons` is non-empty |
+
+A reason is prose with no location, so it never becomes a thread-flow location. SARIF requires `threadFlows` and `locations` to be non-empty arrays. Emitting `codeFlows` only for a non-empty `path` keeps every document valid.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1173,14 +1196,18 @@ In `crates/stratify-core/src/finding.rs` tests:
     }
 
     #[test]
-    fn evidence_round_trips() {
+    fn evidence_round_trips_and_keeps_order() {
         let f = Finding::new("cycle", Severity::Warning, "m", sp("a.rs", 1), Confidence::Certain)
-            .with_related(sp("b.rs", 3), "cycle_member", "imports a.rs")
-            .with_reason("each file imports the next");
+            .with_path_step(sp("a.rs", 1), "cycle_member", "imports b.rs")
+            .with_path_step(sp("b.rs", 3), "cycle_member", "imports a.rs")
+            .with_related(sp("c.rs", 9), "clone", "same block")
+            .with_reason("first")
+            .with_reason("second");
         let json = serde_json::to_string(&f).unwrap();
         let back: Finding = serde_json::from_str(&json).unwrap();
         assert_eq!(back, f);
-        assert_eq!(back.related[0].role, "cycle_member");
+        assert_eq!(back.path[1].span.file, "b.rs");
+        assert_eq!(back.reasons, vec!["first", "second"]);
     }
 
     #[test]
@@ -1188,6 +1215,7 @@ In `crates/stratify-core/src/finding.rs` tests:
         let json = r#"{"schema_version":1,"findings":[{"rule":"dead_code","severity":"warning","message":"m","span":{"file":"a","start_byte":0,"end_byte":1,"start_line":1},"confidence":"certain"}]}"#;
         let r: Report = serde_json::from_str(json).unwrap();
         assert!(r.findings[0].related.is_empty());
+        assert!(r.findings[0].path.is_empty());
         assert!(r.findings[0].reasons.is_empty());
     }
 ```
@@ -1196,7 +1224,7 @@ In `crates/stratify-analysis/src/cycles.rs` tests:
 
 ```rust
     #[test]
-    fn cycle_lists_every_member_as_related() {
+    fn cycle_records_members_as_an_ordered_path() {
         let mut g = IrGraph::new();
         let a = file_sym(&mut g, "a.rb");
         let b = file_sym(&mut g, "b.rb");
@@ -1205,22 +1233,23 @@ In `crates/stratify-analysis/src/cycles.rs` tests:
         add_import(&mut g, b, "c.rb");
         add_import(&mut g, c, "a.rb");
         let f = &analyze(&g)[0];
-        let files: Vec<&str> = f.related.iter().map(|r| r.span.file.as_str()).collect();
+        let files: Vec<&str> = f.path.iter().map(|r| r.span.file.as_str()).collect();
         assert_eq!(files, vec!["a.rb", "b.rb", "c.rb"]);
-        assert!(f.related.iter().all(|r| r.role == "cycle_member"));
-        assert_eq!(f.related[2].message, "imports a.rb");
+        assert!(f.path.iter().all(|r| r.role == "cycle_member"));
+        assert_eq!(f.path[2].message, "imports a.rb");
+        assert!(f.related.is_empty());
         assert!(!f.reasons.is_empty());
     }
 ```
 
-In `crates/stratify-analysis/src/duplication.rs` tests, add a test reusing the existing test helpers in that module (read them first). It builds a graph with the same token run in three files and asserts:
+In `crates/stratify-analysis/src/duplication.rs` tests, add a test using that module's existing helpers (read them first). Build a graph with the same token run in three files and assert:
 
 ```rust
-        // one finding, anchored in the first file, listing both other copies
         assert_eq!(findings.len(), 1);
         let sites: Vec<&str> = findings[0].related.iter().map(|r| r.span.file.as_str()).collect();
         assert_eq!(sites.len(), 2);
         assert!(findings[0].related.iter().all(|r| r.role == "clone"));
+        assert!(findings[0].path.is_empty());
 ```
 
 In `crates/stratify-analysis/src/boundaries.rs` tests, extend the existing violation test (read it first) with:
@@ -1230,9 +1259,9 @@ In `crates/stratify-analysis/src/boundaries.rs` tests, extend the existing viola
         assert_eq!(findings[0].related[0].role, "imported_file");
 ```
 
-and assert `related[0].span.file` equals the imported file of that test.
+and assert `related[0].span.file` equals that test's imported file.
 
-In `crates/stratify-analysis/src/deadcode.rs` tests, add:
+In `crates/stratify-analysis/src/deadcode.rs` tests:
 
 ```rust
     #[test]
@@ -1255,25 +1284,67 @@ In `crates/stratify-analysis/src/deadcode.rs` tests, add:
 In `crates/stratify-report/src/sarif.rs` tests:
 
 ```rust
-    #[test]
-    fn related_spans_become_related_locations() {
-        let f = finding("cycle", Severity::Warning, "a.rb", 1)
-            .with_related(Span { file: "b.rb".into(), start_byte: 0, end_byte: 1, start_line: 4 }, "cycle_member", "imports a.rb")
-            .with_reason("each file imports the next");
-        let v: serde_json::Value = serde_json::from_str(&render(&Report::new(vec![f]))).unwrap();
-        let rel = &v["runs"][0]["results"][0]["relatedLocations"][0];
-        assert_eq!(rel["id"], 0);
-        assert_eq!(rel["physicalLocation"]["artifactLocation"]["uri"], "b.rb");
-        assert_eq!(rel["physicalLocation"]["region"]["startLine"], 4);
-        assert_eq!(rel["message"]["text"], "imports a.rb");
-        assert_eq!(v["runs"][0]["results"][0]["properties"]["reasons"][0], "each file imports the next");
+    fn span_at(file: &str, line: usize) -> Span {
+        Span { file: file.into(), start_byte: 0, end_byte: 1, start_line: line }
     }
 
     #[test]
-    fn result_without_evidence_has_no_related_keys() {
+    fn related_spans_become_related_locations() {
+        let f = finding("duplication", Severity::Warning, "a.rb", 1)
+            .with_related(span_at("b.rb", 4), "clone", "same block")
+            .with_related(span_at("c.rb", 7), "clone", "same block");
+        let v: serde_json::Value = serde_json::from_str(&render(&Report::new(vec![f]))).unwrap();
+        let rel = v["runs"][0]["results"][0]["relatedLocations"].as_array().unwrap();
+        assert_eq!(rel.len(), 2);
+        assert_eq!(rel[1]["id"], 1);
+        assert_eq!(rel[1]["physicalLocation"]["artifactLocation"]["uri"], "c.rb");
+        assert_eq!(rel[1]["physicalLocation"]["region"]["startLine"], 7);
+        assert_eq!(rel[1]["message"]["text"], "same block");
+        assert!(v["runs"][0]["results"][0].get("codeFlows").is_none());
+    }
+
+    #[test]
+    fn path_becomes_one_ordered_thread_flow() {
+        let f = finding("cycle", Severity::Warning, "a.rb", 1)
+            .with_path_step(span_at("a.rb", 1), "cycle_member", "imports b.rb")
+            .with_path_step(span_at("b.rb", 2), "cycle_member", "imports c.rb")
+            .with_path_step(span_at("c.rb", 3), "cycle_member", "imports a.rb")
+            .with_reason("each file imports the next")
+            .with_reason("the last imports the first");
+        let v: serde_json::Value = serde_json::from_str(&render(&Report::new(vec![f]))).unwrap();
+        let result = &v["runs"][0]["results"][0];
+        let flows = result["codeFlows"].as_array().unwrap();
+        assert_eq!(flows.len(), 1);
+        assert_eq!(flows[0]["message"]["text"], "each file imports the next; the last imports the first");
+        let threads = flows[0]["threadFlows"].as_array().unwrap();
+        assert_eq!(threads.len(), 1);
+        let locs = threads[0]["locations"].as_array().unwrap();
+        let uris: Vec<&str> = locs
+            .iter()
+            .map(|l| l["location"]["physicalLocation"]["artifactLocation"]["uri"].as_str().unwrap())
+            .collect();
+        assert_eq!(uris, vec!["a.rb", "b.rb", "c.rb"]);
+        let orders: Vec<u64> = locs.iter().map(|l| l["executionOrder"].as_u64().unwrap()).collect();
+        assert_eq!(orders, vec![1, 2, 3]);
+        assert_eq!(locs[2]["location"]["message"]["text"], "imports a.rb");
+        assert_eq!(result["properties"]["reasons"][1], "the last imports the first");
+    }
+
+    #[test]
+    fn reasons_without_path_go_to_properties_only() {
+        let f = finding("dead_code", Severity::Warning, "a.rb", 1).with_reason("no caller");
+        let v: serde_json::Value = serde_json::from_str(&render(&Report::new(vec![f]))).unwrap();
+        let result = &v["runs"][0]["results"][0];
+        assert_eq!(result["properties"]["reasons"][0], "no caller");
+        assert!(result.get("codeFlows").is_none());
+    }
+
+    #[test]
+    fn result_without_evidence_has_no_evidence_keys() {
         let v: serde_json::Value = serde_json::from_str(&render(&Report::new(vec![finding("cycle", Severity::Warning, "a.rb", 1)]))).unwrap();
         let r = v["runs"][0]["results"][0].as_object().unwrap();
         assert!(!r.contains_key("relatedLocations"));
+        assert!(!r.contains_key("codeFlows"));
         assert!(!r.contains_key("properties"));
     }
 ```
@@ -1281,15 +1352,15 @@ In `crates/stratify-report/src/sarif.rs` tests:
 - [ ] **Step 2: Run the tests and confirm they fail**
 
 Run: `cargo test --workspace`
-Expected: compile errors (`Finding::new`, `related`, `reasons` not found).
+Expected: compile errors (`Finding::new`, `related`, `path`, `reasons` not found).
 
 - [ ] **Step 3: Implement the core type**
 
 In `finding.rs`:
 
 ```rust
-/// A secondary location backing a finding: another clone site, another file
-/// in a cycle, the file a forbidden import points at.
+/// A secondary location backing a finding: another clone site, a step in a
+/// cycle, the file a forbidden import points at.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Related {
     pub span: Span,
@@ -1299,7 +1370,7 @@ pub struct Related {
 }
 
 /// One reported problem. `rule` identifies the analysis, e.g. "dead_code".
-/// `related` and `reasons` are optional evidence. Both are omitted from JSON
+/// `related`, `path`, and `reasons` are optional evidence, omitted from JSON
 /// when empty, so a finding without evidence serializes exactly as in v0.6.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Finding {
@@ -1308,8 +1379,13 @@ pub struct Finding {
     pub message: String,
     pub span: Span,
     pub confidence: Confidence,
+    /// Supporting locations. No order implied.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub related: Vec<Related>,
+    /// Ordered steps of a flow: the files of a cycle, later the hops of a
+    /// taint path. SARIF renders it as one thread flow.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub path: Vec<Related>,
     /// Ordered reason chain: why the analysis flagged this.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reasons: Vec<String>,
@@ -1330,6 +1406,7 @@ impl Finding {
             span,
             confidence,
             related: Vec::new(),
+            path: Vec::new(),
             reasons: Vec::new(),
         }
     }
@@ -1340,11 +1417,17 @@ impl Finding {
         role: impl Into<String>,
         message: impl Into<String>,
     ) -> Self {
-        self.related.push(Related {
-            span,
-            role: role.into(),
-            message: message.into(),
-        });
+        self.related.push(Related { span, role: role.into(), message: message.into() });
+        self
+    }
+
+    pub fn with_path_step(
+        mut self,
+        span: Span,
+        role: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        self.path.push(Related { span, role: role.into(), message: message.into() });
         self
     }
 
@@ -1355,40 +1438,77 @@ impl Finding {
 }
 ```
 
-Update `lib.rs`: `pub use finding::{Finding, Related, Report, Severity};`. Leave `SCHEMA_VERSION` at 1 and add a doc line above it: `/// Additive optional fields do not bump this. stratify-judge skips judgment for any version it does not know.`
+Update `lib.rs`: `pub use finding::{Finding, Related, Report, Severity};`. Leave `SCHEMA_VERSION` at 1, with this doc line above it: `/// Additive optional fields do not bump this. stratify-judge skips judgment for any version it does not know.`
 
 - [ ] **Step 4: Convert every literal and populate evidence**
 
-Replace each production `Finding { ... }` literal with `Finding::new(...)`. In test code, either use `Finding::new` or add `related: Vec::new(), reasons: Vec::new()`.
+Replace each production `Finding { ... }` literal with `Finding::new(...)`. In test code, either use `Finding::new` or add `related: Vec::new(), path: Vec::new(), reasons: Vec::new()`.
 
 Evidence per analysis:
 
-- `cycles.rs`: for the cycle `[n0, n1, ..., nk]` (fqns) with display files `files`, attach one related per member, in cycle order: span = `spans.get(fqn)` (fall back to the same zero span used for the primary), role `"cycle_member"`, message `format!("imports {}", files[(i + 1) % files.len()])`. Add reason `"each file in the cycle imports the next, and the last imports the first"`.
-- `duplication.rs`: for each `o` in `valid_others` sorted ascending, related span = `Span { file: tokens[o].file.clone(), start_byte: tokens[o].start_byte, end_byte: tokens[o + k - 1].end_byte, start_line: tokens[o].start_line }`, role `"clone"`, message `format!("same {k}-token block")`. Add reason `format!("{} normalized tokens match exactly; identifiers, numbers, and strings are compared by kind", k)`.
-- `boundaries.rs`: related = `span_of.get(tgt)` (fall back to a zero span at `tgt`), role `"imported_file"`, message `format!("{tgt} is in layer `{tgt_layer}`")`. Reason `format!("stratify.toml forbids layer `{src_layer}` from importing layer `{tgt_layer}`")`.
+- `cycles.rs`: for the cycle `[n0, ..., nk]` (fqns) with display files `files`, add one path step per member, in cycle order:
+  - span = `spans.get(fqn)`, falling back to the same zero span the primary uses;
+  - role `"cycle_member"`;
+  - message `format!("imports {}", files[(i + 1) % files.len()])`.
+  - Then add reason `"each file in the cycle imports the next, and the last imports the first"`.
+- `duplication.rs`: for each `o` in `valid_others` sorted ascending, add a related entry:
+  - span = `Span { file: tokens[o].file.clone(), start_byte: tokens[o].start_byte, end_byte: tokens[o + k - 1].end_byte, start_line: tokens[o].start_line }`;
+  - role `"clone"`;
+  - message `format!("same {k}-token block")`.
+  - Then add reason `format!("{k} normalized tokens match exactly; identifiers, numbers, and strings are compared by kind")`.
+- `boundaries.rs`: add one related entry:
+  - span = `span_of.get(tgt)`, falling back to a zero span at `tgt`;
+  - role `"imported_file"`;
+  - message `format!("{tgt} is in layer `{tgt_layer}`")`.
+  - Then add reason `format!("stratify.toml forbids layer `{src_layer}` from importing layer `{tgt_layer}`")`.
 - `deadcode.rs`:
   - Certain branch: reason `"no call from any entrypoint reaches this function"`.
-  - Likely branch: if `reached_any.contains(&s.id)` push `"reached only through a name-matched call, which cannot prove this exact function is the target"`. If `s.visibility == Visibility::Public && mode == DeadCodeMode::Library` push `"public in library mode: code outside this scan may call it"`. Both reasons are pushed when both hold.
+  - Likely branch: when `reached_any.contains(&s.id)`, push `"reached only through a name-matched call, which cannot prove this exact function is the target"`. When `s.visibility == Visibility::Public && mode == DeadCodeMode::Library`, push `"public in library mode: code outside this scan may call it"`. When both hold, push both.
 - `complexity.rs`: reason `format!("{cx} independent paths exceed the threshold of {threshold}")`.
-- `hotspot.rs`: read the function first, then add one reason naming the complexity and churn values the message already uses.
+- `hotspot.rs`: read the function first. Add one reason that names the complexity and churn values the message already uses.
 
-- [ ] **Step 5: SARIF related locations**
+- [ ] **Step 5: SARIF mapping**
 
-In `sarif.rs`, extend `SarifResult`:
-
-```rust
-    #[serde(rename = "relatedLocations", skip_serializing_if = "Vec::is_empty")]
-    related_locations: Vec<RelatedLocation>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    properties: Option<ResultProperties>,
-```
-
-with
+In `sarif.rs`, add a shared helper and the evidence types:
 
 ```rust
+fn physical(span: &Span) -> PhysicalLocation {
+    PhysicalLocation {
+        artifact_location: ArtifactLocation { uri: span.file.clone() },
+        region: Region { start_line: span.start_line.max(1) },
+    }
+}
+
 #[derive(Serialize)]
 struct RelatedLocation {
     id: usize,
+    #[serde(rename = "physicalLocation")]
+    physical_location: PhysicalLocation,
+    message: Text,
+}
+
+#[derive(Serialize)]
+struct CodeFlow {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<Text>,
+    #[serde(rename = "threadFlows")]
+    thread_flows: Vec<ThreadFlow>,
+}
+
+#[derive(Serialize)]
+struct ThreadFlow {
+    locations: Vec<ThreadFlowLocation>,
+}
+
+#[derive(Serialize)]
+struct ThreadFlowLocation {
+    location: FlowLocation,
+    #[serde(rename = "executionOrder")]
+    execution_order: usize,
+}
+
+#[derive(Serialize)]
+struct FlowLocation {
     #[serde(rename = "physicalLocation")]
     physical_location: PhysicalLocation,
     message: Text,
@@ -1400,15 +1520,35 @@ struct ResultProperties {
 }
 ```
 
-Fill `related_locations` from `f.related` with `id` = index, and `properties` = `Some(ResultProperties { reasons: f.reasons.clone() })` only when `f.reasons` is non-empty.
+Extend `SarifResult` with:
+
+```rust
+    #[serde(rename = "relatedLocations", skip_serializing_if = "Vec::is_empty")]
+    related_locations: Vec<RelatedLocation>,
+    #[serde(rename = "codeFlows", skip_serializing_if = "Vec::is_empty")]
+    code_flows: Vec<CodeFlow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    properties: Option<ResultProperties>,
+```
+
+Fill them per the SARIF contract table above:
+- `related_locations`: from `f.related`, with `id` = the index.
+- `code_flows`: empty when `f.path` is empty. Otherwise one `CodeFlow`:
+  - `message` = `Some(Text { text: f.reasons.join("; ") })` when `reasons` is non-empty, else `None`;
+  - one `ThreadFlow` whose `locations` follow `f.path` order, with `execution_order` = index + 1.
+- `properties`: `Some(ResultProperties { reasons: f.reasons.clone() })` only when `reasons` is non-empty.
+
+Use `physical()` for the primary location too, so all four location shapes share one helper.
 
 `CHANGELOG.md` under `## [Unreleased]` `### Added`:
+
 ```markdown
-- Findings carry evidence: `related` locations (every file in a cycle, every
-  clone site, the file a forbidden import points at) and a `reasons` chain.
-  Both fields are optional and omitted when empty, so the JSON schema stays
-  at version 1. SARIF maps them to `relatedLocations` and
-  `properties.reasons`.
+- Findings carry evidence: `related` locations (clone sites, the file a
+  forbidden import points at), an ordered `path` (the files of a cycle), and
+  a `reasons` chain. All three are optional and omitted when empty, so the
+  JSON schema stays at version 1. SARIF maps `related` to
+  `relatedLocations`, `path` to one ordered `codeFlows` thread flow, and
+  `reasons` to `properties.reasons` (and to the code flow's message).
 ```
 
 - [ ] **Step 6: Run the tests and confirm they pass**
@@ -1416,178 +1556,357 @@ Fill `related_locations` from `f.related` with `id` = index, and `properties` = 
 Run: `cargo test --workspace`
 Expected: all pass.
 
-Check judge compatibility: `cargo run -q -p stratify-cli -- check crates/stratify-cli/tests/sample-java --format json` must still show `"schema_version": 1`, and its findings must have no `related` or `reasons` keys when the analysis attached none.
+Check judge compatibility. Run `cargo run -q -p stratify-cli -- check crates/stratify-cli/tests/sample-java --format json`. Expect:
+- `"schema_version": 1`;
+- no `related`, `path` or `reasons` keys on any finding the analysis gave no evidence to.
 
 - [ ] **Step 7: Lint and commit**
 
 ```bash
 cargo fmt --all && cargo clippy --all-targets -- -D warnings
 git add -A crates CHANGELOG.md
-git commit -m "feat(core): attach related locations and reasons to findings"
+git commit -m "feat(core): attach related locations, flow paths, and reasons to findings"
 ```
 
 ---
 
-### Task 5: Line-level suppression comments
+### Task 5: Comment-only suppression markers
 
 **Files:**
+- Modify: `crates/stratify-core/src/ir.rs`, `crates/stratify-core/src/graph.rs`, `crates/stratify-core/src/lib.rs`
+- Modify: `crates/stratify-lang/src/walk.rs`
+- Modify: the six adapters' `crates/stratify-lang-{java,ruby,ts,py,go,rust}/src/extract.rs`
 - Create: `crates/stratify-analysis/src/suppress.rs`
-- Modify: `crates/stratify-analysis/src/lib.rs`
-- Modify: `crates/stratify-cli/src/run.rs`
-- Create: `crates/stratify-cli/tests/sample-suppress/app.rb`
-- Create: `crates/stratify-cli/tests/e2e_suppress.rs`
+- Modify: `crates/stratify-analysis/src/lib.rs`, `crates/stratify-cli/src/run.rs`
+- Create: `crates/stratify-cli/tests/sample-suppress/app.rb`, `crates/stratify-cli/tests/e2e_suppress.rs`
 - Modify: `README.md`, `CHANGELOG.md`
 
 **Interfaces:**
-- Consumes: `Finding` with `rule` and `span.start_line` (1-based).
-- Produces: `pub fn is_suppressed(source: &str, line: usize, rule: &str) -> bool` and `pub fn apply(findings: Vec<Finding>, read: impl FnMut(&str) -> Option<String>) -> (Vec<Finding>, usize)` in `stratify_analysis::suppress`. The `usize` is the count removed.
+- Consumes: `Finding` with `rule` and `span.start_line` (1-based), and `Finding::new` (Task 4).
+- Produces:
+  - `stratify_core::ir::Suppression { pub file: String, pub start_line: usize, pub end_line: usize, pub rules: Vec<String> }` (serde derives, re-exported from `stratify_core`).
+  - `IrGraph::add_suppression(&mut self, s: Suppression)` and `IrGraph::suppressions(&self) -> &[Suppression]`. `IrGraph::merge` appends the other graph's suppressions.
+  - `stratify_lang::walk::parse_suppression_marker(comment: &str) -> Vec<String>`
+  - `stratify_lang::walk::collect_suppressions(graph: &mut IrGraph, root: Node, src: &str, file: &str, comment_kinds: &[&str])`
+  - `stratify_analysis::suppress::apply(graph: &IrGraph, findings: Vec<Finding>) -> (Vec<Finding>, usize)`. The `usize` is the count removed.
 
-Syntax: a comment containing `stratify-ignore: <rule>[, <rule>...]` on the finding's start line or on the line directly above. The marker works inside any comment syntax (`//`, `#`, `/* */`, `--`), because the check reads the raw line text. A rule id is required. `stratify-ignore:` with no rule, or `stratify-ignore: *`, suppresses nothing.
+**How comments are found.** Every adapter already holds a tree-sitter parse tree. A string literal is never a comment node, so a marker counts only when it sits inside a node whose kind is in the language's comment-kind list. The adapter records each marker comment in the IR. The filter in `stratify-analysis` reads only the IR and never branches on language.
 
-- [ ] **Step 1: Write the failing tests**
+| Language | Comment kinds (tree-sitter 0.23 grammars) | Forms covered |
+|---|---|---|
+| Java | `line_comment`, `block_comment` | `//`, `/* */`, `/** */` |
+| Ruby | `comment` | `#`, `=begin ... =end` |
+| TypeScript | `comment` | `//`, `/* */` |
+| Python | `comment` | `#` (docstrings are strings and never count) |
+| Go | `comment` | `//`, `/* */` |
+| Rust | `line_comment`, `block_comment` | `//`, `///`, `/* */` |
 
-Create `crates/stratify-analysis/src/suppress.rs` with the test module:
+The per-adapter tests below fail if a kind name is wrong for the grammar. If one fails that way, print the tree's node kinds (`root.to_sexp()`) and fix the kind list. Never fix the test.
+
+**Marker syntax.**
+- Write `stratify-ignore: <rule>[, <rule>...]` inside a comment.
+- Each comma-separated item contributes its first word, so `stratify-ignore: dead_code, complexity -- called by the router` names `dead_code` and `complexity`.
+- A word counts only when it is rule-shaped: lowercase ASCII letters, digits and `_`, starting with a letter.
+- An empty list or `*` names nothing. A rule id is required.
+
+**Line rule.** A comment covers lines `start_line..=end_line`. A grammar whose comment node ends at column 0 of the next row (a line comment that swallows its newline) gets `end_line` = that row, not the next one. A finding at line `L` is suppressed by a comment in the same file that names its rule when either holds:
+- `start_line <= L <= end_line`: a trailing comment on the same line;
+- `end_line == L - 1`: the comment ends on the line directly above.
+
+- [ ] **Step 1: Write the failing IR and walker tests**
+
+In `crates/stratify-core/src/graph.rs` tests:
+
+```rust
+    #[test]
+    fn suppressions_survive_merge() {
+        let mut a = IrGraph::new();
+        a.add_suppression(Suppression { file: "a.rs".into(), start_line: 1, end_line: 1, rules: vec!["dead_code".into()] });
+        let mut b = IrGraph::new();
+        b.add_suppression(Suppression { file: "b.rs".into(), start_line: 4, end_line: 6, rules: vec!["cycle".into()] });
+        a.merge(b);
+        let files: Vec<&str> = a.suppressions().iter().map(|s| s.file.as_str()).collect();
+        assert_eq!(files, vec!["a.rs", "b.rs"]);
+    }
+```
+
+In `crates/stratify-lang/src/walk.rs` tests (the module already parses Go in tests):
+
+```rust
+    #[test]
+    fn parses_marker_rule_lists() {
+        assert_eq!(parse_suppression_marker("// stratify-ignore: dead_code"), vec!["dead_code"]);
+        assert_eq!(
+            parse_suppression_marker("# stratify-ignore: dead_code, complexity -- router calls it"),
+            vec!["dead_code", "complexity"]
+        );
+        assert_eq!(parse_suppression_marker("/* stratify-ignore: cycle */"), vec!["cycle"]);
+        assert_eq!(parse_suppression_marker("/*stratify-ignore: cycle*/"), vec!["cycle"]);
+        assert!(parse_suppression_marker("// stratify-ignore:").is_empty());
+        assert!(parse_suppression_marker("// stratify-ignore: *").is_empty());
+        assert!(parse_suppression_marker("// nothing here").is_empty());
+    }
+
+    #[test]
+    fn collects_markers_only_from_comment_nodes_in_source_order() {
+        let src = "package a\n// stratify-ignore: dead_code\nfunc a() {}\nvar s = \"stratify-ignore: complexity\"\n/* stratify-ignore: duplication\n */\nfunc c() {}\n";
+        let tree = go_parse(src);
+        let mut g = IrGraph::new();
+        collect_suppressions(&mut g, tree.root_node(), src, "a.go", &["comment"]);
+        let got: Vec<(usize, usize, Vec<String>)> = g
+            .suppressions()
+            .iter()
+            .map(|s| (s.start_line, s.end_line, s.rules.clone()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![(2, 2, vec!["dead_code".to_string()]), (5, 6, vec!["duplication".to_string()])]
+        );
+    }
+```
+
+`go_parse` stands for however the existing walk tests build a Go tree. Read the test module and reuse its helper, or add a two-line one.
+
+- [ ] **Step 2: Run them and confirm they fail**
+
+Run: `cargo test -p stratify-core suppressions && cargo test -p stratify-lang`
+Expected: compile errors (`Suppression`, `parse_suppression_marker` not found).
+
+- [ ] **Step 3: Implement the IR type and the walker**
+
+In `ir.rs`:
+
+```rust
+/// A `stratify-ignore: <rules>` marker found inside a comment. Lines are
+/// 1-based and inclusive. Adapters record these; analyses never look for
+/// comment syntax themselves.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Suppression {
+    pub file: String,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub rules: Vec<String>,
+}
+```
+
+In `graph.rs`, add a `suppressions: Vec<Suppression>` field, plus `add_suppression`, `suppressions`, and `self.suppressions.extend(other.suppressions)` in `merge`. Re-export `Suppression` from `lib.rs`.
+
+In `walk.rs`:
+
+```rust
+const SUPPRESSION_MARKER: &str = "stratify-ignore:";
+
+/// Rule ids named by a `stratify-ignore: a, b` marker in one comment's text.
+/// Each comma-separated item contributes its first word when the word is a
+/// rule-shaped id. No marker, an empty list, or `*` gives an empty Vec.
+pub fn parse_suppression_marker(comment: &str) -> Vec<String> {
+    let Some(pos) = comment.find(SUPPRESSION_MARKER) else {
+        return Vec::new();
+    };
+    comment[pos + SUPPRESSION_MARKER.len()..]
+        .split(',')
+        .filter_map(|item| item.split_whitespace().next())
+        .map(|word| word.trim_end_matches("*/"))
+        .filter(|word| is_rule_id(word))
+        .map(str::to_string)
+        .collect()
+}
+
+fn is_rule_id(word: &str) -> bool {
+    let mut chars = word.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_lowercase())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// Record a Suppression for each comment node (matched by grammar kind)
+/// whose text carries a marker, in source order. String literals are never
+/// comment nodes, so a marker inside a string is ignored.
+pub fn collect_suppressions(
+    graph: &mut IrGraph,
+    root: Node,
+    src: &str,
+    file: &str,
+    comment_kinds: &[&str],
+) {
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if comment_kinds.contains(&node.kind()) {
+            let rules = parse_suppression_marker(node_text(node, src));
+            if !rules.is_empty() {
+                let start = node.start_position();
+                let end = node.end_position();
+                // A comment that swallows its newline ends at column 0 of the
+                // next row. It still belongs to the row before.
+                let end_row = if end.column == 0 && end.row > start.row {
+                    end.row - 1
+                } else {
+                    end.row
+                };
+                graph.add_suppression(Suppression {
+                    file: file.to_string(),
+                    start_line: start.row + 1,
+                    end_line: end_row + 1,
+                    rules,
+                });
+            }
+            continue;
+        }
+        let mut cursor = node.walk();
+        let children: Vec<Node> = node.children(&mut cursor).collect();
+        for child in children.into_iter().rev() {
+            stack.push(child);
+        }
+    }
+}
+```
+
+Run: `cargo test -p stratify-core && cargo test -p stratify-lang`
+Expected: pass.
+
+- [ ] **Step 4: Wire each adapter, with a test per language**
+
+In each adapter's `extract`, right after the existing `walk::tokenize(...)` call, add one line with that language's kinds from the table, for example Rust:
+
+```rust
+    walk::collect_suppressions(&mut g, root, src, file, &["line_comment", "block_comment"]);
+```
+
+Add one test per adapter in its `extract.rs` test module. Each test calls the adapter's own `extract` function the same way the file's existing tests do, and uses this assertion helper inline:
+
+```rust
+        let got: Vec<(usize, usize, Vec<String>)> = g
+            .suppressions()
+            .iter()
+            .map(|s| (s.start_line, s.end_line, s.rules.clone()))
+            .collect();
+```
+
+| Adapter | Test name | Source (`src`) | Expected `got` |
+|---|---|---|---|
+| rust | `suppression_markers_come_only_from_comments` | `"// stratify-ignore: dead_code\nfn a() {}\nfn b() { let s = \"stratify-ignore: complexity\"; }\n/* stratify-ignore: duplication */\nfn c() {}\n"` | `[(1, 1, ["dead_code"]), (4, 4, ["duplication"])]` |
+| java | same | `"class A {\n  // stratify-ignore: dead_code\n  void a() {}\n  String s = \"stratify-ignore: complexity\";\n  /* stratify-ignore: duplication */\n  void c() {}\n}\n"` | `[(2, 2, ["dead_code"]), (5, 5, ["duplication"])]` |
+| ts | same | `"// stratify-ignore: dead_code\nfunction a() {}\nconst s = \"stratify-ignore: complexity\";\n/* stratify-ignore: duplication */\nfunction c() {}\n"` | `[(1, 1, ["dead_code"]), (4, 4, ["duplication"])]` |
+| go | same | `"package a\n// stratify-ignore: dead_code\nfunc a() {}\nvar s = \"stratify-ignore: complexity\"\n/* stratify-ignore: duplication */\nfunc c() {}\n"` | `[(2, 2, ["dead_code"]), (5, 5, ["duplication"])]` |
+| py | same | `"# stratify-ignore: dead_code\ndef a():\n    \"\"\"stratify-ignore: complexity\"\"\"\n    s = \"stratify-ignore: duplication\"\n"` | `[(1, 1, ["dead_code"])]` |
+| ruby | same | `"# stratify-ignore: dead_code\ndef a\n  s = \"stratify-ignore: complexity\"\nend\n=begin\nstratify-ignore: duplication\n=end\ndef c\nend\n"` | `[(1, 1, ["dead_code"]), (5, 7, ["duplication"])]` |
+
+Write each expected value as `vec![(1, 1, vec!["dead_code".to_string()]), ...]`. Each test covers the string-literal case (the marker inside a string must not appear in `got`), a line comment, and a block comment where the language has one.
+
+Run: `cargo test --workspace`
+Expected: pass.
+
+- [ ] **Step 5: The filter, with failing tests first**
+
+Create `crates/stratify-analysis/src/suppress.rs` with its tests:
 
 ```rust
 #[cfg(test)]
 mod tests {
     use super::*;
-    use stratify_core::ir::Span;
-    use stratify_core::{Confidence, Finding, Severity};
-
-    const SRC: &str = "fn a() {}\n// stratify-ignore: dead_code\nfn b() {}\nfn c() {} # stratify-ignore: complexity, dead_code\n// stratify-ignore:\nfn d() {}\n// stratify-ignore: *\nfn e() {}\n";
-
-    #[test]
-    fn marker_on_line_above_suppresses() {
-        assert!(is_suppressed(SRC, 3, "dead_code"));
-    }
-
-    #[test]
-    fn marker_on_same_line_with_rule_list_suppresses() {
-        assert!(is_suppressed(SRC, 4, "dead_code"));
-        assert!(is_suppressed(SRC, 4, "complexity"));
-    }
-
-    #[test]
-    fn marker_for_other_rule_does_not_suppress() {
-        assert!(!is_suppressed(SRC, 3, "duplication"));
-    }
-
-    #[test]
-    fn marker_without_rule_or_wildcard_does_not_suppress() {
-        assert!(!is_suppressed(SRC, 6, "dead_code"));
-        assert!(!is_suppressed(SRC, 8, "dead_code"));
-    }
-
-    #[test]
-    fn unmarked_line_and_out_of_range_lines_are_not_suppressed() {
-        assert!(!is_suppressed(SRC, 1, "dead_code"));
-        assert!(!is_suppressed(SRC, 0, "dead_code"));
-        assert!(!is_suppressed(SRC, 999, "dead_code"));
-    }
-
-    #[test]
-    fn rule_prefix_is_not_a_match() {
-        assert!(!is_suppressed("x // stratify-ignore: dead\n", 1, "dead_code"));
-    }
+    use stratify_core::ir::{Span, Suppression};
+    use stratify_core::{Confidence, Finding, IrGraph, Severity};
 
     fn f(rule: &str, file: &str, line: usize) -> Finding {
         Finding::new(rule, Severity::Warning, "m", Span { file: file.into(), start_byte: 0, end_byte: 1, start_line: line }, Confidence::Certain)
     }
 
+    fn graph() -> IrGraph {
+        let mut g = IrGraph::new();
+        // line comment on line 2, naming dead_code
+        g.add_suppression(Suppression { file: "a.rs".into(), start_line: 2, end_line: 2, rules: vec!["dead_code".into()] });
+        // trailing comment on line 10, naming two rules
+        g.add_suppression(Suppression { file: "a.rs".into(), start_line: 10, end_line: 10, rules: vec!["complexity".into(), "dead_code".into()] });
+        // block comment on lines 20-22
+        g.add_suppression(Suppression { file: "a.rs".into(), start_line: 20, end_line: 22, rules: vec!["cycle".into()] });
+        g
+    }
+
     #[test]
-    fn apply_drops_suppressed_and_counts_them() {
-        let findings = vec![f("dead_code", "a.rs", 3), f("dead_code", "a.rs", 1), f("dead_code", "missing.rs", 3)];
-        let (kept, removed) = apply(findings, |file| (file == "a.rs").then(|| SRC.to_string()));
+    fn preceding_line_comment_suppresses() {
+        let (kept, removed) = apply(&graph(), vec![f("dead_code", "a.rs", 3)]);
+        assert!(kept.is_empty());
         assert_eq!(removed, 1);
-        assert_eq!(kept.len(), 2);
-        assert!(kept.iter().any(|k| k.span.file == "missing.rs"), "unreadable file keeps its finding");
+    }
+
+    #[test]
+    fn same_line_comment_suppresses_each_named_rule() {
+        let (kept, _) = apply(&graph(), vec![f("dead_code", "a.rs", 10), f("complexity", "a.rs", 10)]);
+        assert!(kept.is_empty());
+    }
+
+    #[test]
+    fn block_comment_ending_above_suppresses() {
+        let (kept, _) = apply(&graph(), vec![f("cycle", "a.rs", 23)]);
+        assert!(kept.is_empty());
+    }
+
+    #[test]
+    fn other_rule_other_file_and_distant_lines_stay() {
+        let findings = vec![
+            f("duplication", "a.rs", 3), // rule not named
+            f("dead_code", "b.rs", 3),   // other file
+            f("dead_code", "a.rs", 4),   // two lines below the comment
+            f("dead_code", "a.rs", 1),   // above the comment
+        ];
+        let (kept, removed) = apply(&graph(), findings);
+        assert_eq!(kept.len(), 4);
+        assert_eq!(removed, 0);
     }
 }
 ```
 
-Add `pub mod suppress;` to `crates/stratify-analysis/src/lib.rs`.
-
-- [ ] **Step 2: Run the tests and confirm they fail**
-
 Run: `cargo test -p stratify-analysis suppress`
-Expected: compile error, `is_suppressed` not found.
+Expected: compile error, `apply` not found.
 
-- [ ] **Step 3: Implement**
-
-Above the tests in `suppress.rs`:
+Implement above the tests:
 
 ```rust
 use std::collections::HashMap;
-use stratify_core::Finding;
+use stratify_core::ir::Suppression;
+use stratify_core::{Finding, IrGraph};
 
-const MARKER: &str = "stratify-ignore:";
-
-/// True if `line` (1-based) or the line above carries a
-/// `stratify-ignore: <rules>` marker naming `rule`.
-pub fn is_suppressed(source: &str, line: usize, rule: &str) -> bool {
-    if line == 0 {
-        return false;
-    }
-    let lines: Vec<&str> = source.lines().collect();
-    let mut candidates = Vec::new();
-    if let Some(l) = lines.get(line - 1) {
-        candidates.push(*l);
-    }
-    if line >= 2 {
-        if let Some(l) = lines.get(line - 2) {
-            candidates.push(*l);
-        }
-    }
-    candidates.iter().any(|l| names_rule(l, rule))
+/// True if `s` names `f`'s rule and sits on `f`'s line or ends on the line above.
+fn covers(s: &Suppression, f: &Finding) -> bool {
+    let line = f.span.start_line;
+    s.rules.iter().any(|r| r == &f.rule)
+        && ((s.start_line <= line && line <= s.end_line) || s.end_line + 1 == line)
 }
 
-fn names_rule(line: &str, rule: &str) -> bool {
-    let Some(pos) = line.find(MARKER) else {
-        return false;
-    };
-    line[pos + MARKER.len()..]
-        .split(|c: char| c == ',' || c.is_whitespace())
-        .map(|t| t.trim_end_matches("*/"))
-        .any(|t| t == rule)
-}
-
-/// Remove suppressed findings. `read` returns a file's source by the
-/// finding's relative path, or None when unreadable (the finding stays).
-/// Each file is read once.
-pub fn apply(
-    findings: Vec<Finding>,
-    mut read: impl FnMut(&str) -> Option<String>,
-) -> (Vec<Finding>, usize) {
-    let mut cache: HashMap<String, Option<String>> = HashMap::new();
+/// Remove findings covered by a comment suppression recorded in the IR.
+/// Returns the kept findings and how many were removed.
+pub fn apply(graph: &IrGraph, findings: Vec<Finding>) -> (Vec<Finding>, usize) {
+    let mut by_file: HashMap<&str, Vec<&Suppression>> = HashMap::new();
+    for s in graph.suppressions() {
+        by_file.entry(s.file.as_str()).or_default().push(s);
+    }
     let mut kept = Vec::with_capacity(findings.len());
     let mut removed = 0;
     for f in findings {
-        let src = cache
-            .entry(f.span.file.clone())
-            .or_insert_with(|| read(&f.span.file));
-        match src {
-            Some(s) if is_suppressed(s, f.span.start_line, &f.rule) => removed += 1,
-            _ => kept.push(f),
+        let hit = by_file
+            .get(f.span.file.as_str())
+            .is_some_and(|list| list.iter().any(|s| covers(s, &f)));
+        if hit {
+            removed += 1;
+        } else {
+            kept.push(f);
         }
     }
     (kept, removed)
 }
 ```
 
-In `run.rs` `analyze_repo_with_stats`, after the boundary findings are added and before `scan_stats`:
+Add `pub mod suppress;` to `crates/stratify-analysis/src/lib.rs`.
+
+In `run.rs` `analyze_repo_with_stats`, after the boundary findings and before `scan_stats`:
 
 ```rust
-    let (findings, _suppressed) = stratify_analysis::suppress::apply(findings, |rel| {
-        std::fs::read_to_string(root.join(rel)).ok()
-    });
+    let (findings, _suppressed) = stratify_analysis::suppress::apply(&graph, findings);
 ```
 
-(`findings` must be declared `let mut findings` already. Rebinding is fine.)
-
-- [ ] **Step 4: E2E fixture and test**
+- [ ] **Step 6: E2E fixture and test**
 
 `crates/stratify-cli/tests/sample-suppress/app.rb`:
+
 ```ruby
 def main
   puts "hi"
@@ -1598,6 +1917,7 @@ def kept_for_reflection
   1
 end
 
+NOTE = "stratify-ignore: dead_code"
 def really_unused
   2
 end
@@ -1606,11 +1926,12 @@ main
 ```
 
 `crates/stratify-cli/tests/e2e_suppress.rs`:
+
 ```rust
 use std::path::Path;
 
 #[test]
-fn suppression_comment_hides_only_the_named_finding() {
+fn only_comment_markers_suppress() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/sample-suppress");
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_stratify"))
         .arg("check")
@@ -1620,46 +1941,50 @@ fn suppression_comment_hides_only_the_named_finding() {
         .output()
         .expect("run stratify binary");
     let stdout = String::from_utf8(output.stdout).unwrap();
+    // A comment marker on the line above hides the finding.
     assert!(!stdout.contains("kept_for_reflection"), "stdout: {stdout}");
+    // The same text inside a string literal on the line above does not.
     assert!(stdout.contains("really_unused"), "stdout: {stdout}");
 }
 ```
 
-Run `cargo test -p stratify-cli --test e2e_suppress` before Step 3 wiring to see it fail, then after to see it pass. If `main` itself is reported (Ruby entrypoint handling), adjust only the fixture, never the assertion targets.
+If `main` itself is reported (Ruby entrypoint handling), adjust only the fixture, never the assertions.
 
-- [ ] **Step 5: Docs**
+- [ ] **Step 7: Docs**
 
-`README.md`, add a section `## Suppress a finding` after "Output formats":
+Add this section to `README.md` after "Output formats":
 
 ````markdown
 ## Suppress a finding
 
-Put `stratify-ignore: <rule>` in a comment on the finding's line or the line above. Name one rule or a comma-separated list. A rule id is required, so a suppression never hides more than you meant.
+Put `stratify-ignore: <rule>` in a comment on the finding's line or the line above. Name one rule or a comma-separated list. A rule id is required, so a suppression never hides more than you meant. Text after the first word of each item is ignored, so you can give a reason.
 
 ```ruby
-# stratify-ignore: dead_code
-def called_by_the_framework
+# stratify-ignore: dead_code -- called by the framework
+def after_commit_hook
 end
 ```
+
+The marker counts only inside a comment: `//`, `/* */`, and `///` in Java, TypeScript, Go, and Rust, and `#` in Ruby and Python, plus Ruby's `=begin`/`=end`. The same text inside a string literal or a Python docstring does nothing. A block comment counts when it ends on the line above the finding.
 
 Rule ids: `dead_code`, `duplication`, `complexity`, `hotspot`, `cycle`, `boundary`. A finding's `rule` field in JSON output shows its id.
 ````
 
 `CHANGELOG.md` under `## [Unreleased]` `### Added`:
+
 ```markdown
-- Line-level suppression: a `stratify-ignore: <rule>` comment on a
-  finding's line or the line above hides that rule's finding there.
+- Comment suppression: a `stratify-ignore: <rule>` comment on a finding's
+  line or the line above hides that rule's finding there. Only real
+  comments count; the same text in a string literal is ignored.
 ```
 
-- [ ] **Step 6: Run all tests, lint, commit**
+- [ ] **Step 8: Run all tests, lint, commit**
 
 ```bash
 cargo test --workspace
 cargo fmt --all && cargo clippy --all-targets -- -D warnings
-git add crates/stratify-analysis/src/suppress.rs crates/stratify-analysis/src/lib.rs \
-  crates/stratify-cli/src/run.rs crates/stratify-cli/tests/sample-suppress \
-  crates/stratify-cli/tests/e2e_suppress.rs README.md CHANGELOG.md
-git commit -m "feat(cli): suppress a finding with a stratify-ignore comment"
+git add crates README.md CHANGELOG.md
+git commit -m "feat: suppress a finding with a stratify-ignore comment"
 ```
 
 ---
@@ -1668,19 +1993,24 @@ git commit -m "feat(cli): suppress a finding with a stratify-ignore comment"
 
 **Files:**
 - Create: `crates/stratify-cli/src/baseline.rs`
-- Modify: `crates/stratify-cli/src/main.rs`
+- Modify: `crates/stratify-cli/src/main.rs`, `crates/stratify-cli/Cargo.toml`
 - Create: `crates/stratify-cli/tests/e2e_baseline.rs`
-- Modify: `action.yml`, `README.md`, `CHANGELOG.md`
+- Create: `scripts/action-run.sh`, `scripts/test_action_run.sh`
+- Modify: `action.yml`, `.github/workflows/ci.yml`, `README.md`, `CHANGELOG.md`
 
 **Interfaces:**
-- Consumes: `stratify_core::{Finding, Report}`.
+- Consumes: `stratify_core::{Finding, Report}`, `Finding::new` (Task 4).
 - Produces in `crates/stratify-cli/src/baseline.rs`:
   - `pub fn fingerprint(f: &Finding) -> String`
   - `pub fn write(report: &Report) -> String` (JSON text)
-  - `pub fn filter_new(report: Report, baseline_json: &str) -> Result<(Report, usize), String>` returning only findings absent from the baseline and the hidden count.
-- CLI: `stratify check --write-baseline <FILE>` writes the baseline and exits 0. `stratify check --baseline <FILE>` reports and gates only new findings. A missing or invalid baseline file prints `stratify: baseline <path>: <reason>` to stderr and exits with code 2.
+  - `pub fn filter_new(report: Report, baseline_json: &str) -> Result<(Report, usize), String>`, which returns only the findings absent from the baseline, plus the count it hid.
+- CLI:
+  - `stratify check --write-baseline <FILE>` writes the baseline and exits 0.
+  - `stratify check --baseline <FILE>` reports and gates only new findings.
+  - A missing or invalid baseline file prints `stratify: baseline <path>: <reason>` to stderr and exits with code 2.
+- Action: inputs reach the shell only through environment variables. `scripts/action-run.sh` builds a quoted argument array.
 
-Fingerprint: `rule`, `span.file`, and `message` with every run of ASCII digits replaced by `#`, joined by `\u{1f}`. Line numbers are not part of it, so a finding that moves stays baselined. Matching counts multiplicity: if the baseline holds a fingerprint twice and the scan finds it three times, one finding is new.
+Fingerprint: `rule`, `span.file`, and `message`, joined by `\u{1f}`. In the message, every run of ASCII digits becomes `#`. Line numbers are not part of the fingerprint, so a finding that moves stays baselined. Matching counts multiplicity: if the baseline holds a fingerprint twice and the scan finds it three times, one finding is new.
 
 Baseline file format:
 
@@ -1836,7 +2166,7 @@ Add `serde = { workspace = true }` to `[dependencies]` in `crates/stratify-cli/C
 
 - [ ] **Step 4: Wire the CLI flags**
 
-In `main.rs`, add to `Command::Check` (and add `baseline` and `write_baseline` to the `Command::Check { .. }` destructuring in `main`):
+In `main.rs`, add these to `Command::Check`. Also add `baseline` and `write_baseline` to the `Command::Check { .. }` destructuring in `main`:
 
 ```rust
         /// Report and gate only findings absent from this baseline file.
@@ -1886,14 +2216,13 @@ After `analyze_repo_with_stats` succeeds and before rendering:
             };
 ```
 
-Telemetry keeps receiving the filtered report. That is intended: dashboards track what the gate sees.
+Telemetry keeps receiving the filtered report. That is intended, so dashboards track what the gate sees.
 
 - [ ] **Step 5: E2E test**
 
 `crates/stratify-cli/tests/e2e_baseline.rs`:
 
 ```rust
-use std::path::Path;
 use std::process::Command;
 
 fn stratify() -> Command {
@@ -1940,34 +2269,115 @@ fn missing_or_invalid_baseline_exits_2() {
     std::fs::write(repo.join("bad.json"), "{").unwrap();
     let invalid = stratify().arg("check").arg(&repo).arg("--baseline").arg(repo.join("bad.json")).output().unwrap();
     assert_eq!(invalid.status.code(), Some(2));
-    let _ = Path::new(&repo);
 }
 ```
 
 If the Ruby fixture's dead-code shape does not produce Warning-level findings for `old_dead` and `new_dead`, read `crates/stratify-cli/tests/sample-ruby` and copy its working shape. Keep the assertions.
 
-- [ ] **Step 6: Action input and docs**
+- [ ] **Step 6: Action inputs through environment variables**
 
-`action.yml`, add an input:
+Inputs never appear inside a `run:` script body. GitHub expands `${{ }}` before bash runs, so an interpolated input becomes shell code. Environment variables arrive as data.
+
+`scripts/action-run.sh`:
+
+```bash
+#!/usr/bin/env bash
+# Run the Stratify gate from the GitHub Action's inputs. action.yml passes
+# each input as an environment variable, never as interpolated shell text,
+# and this script quotes every value into an argument array.
+set -euo pipefail
+
+args=(check "${STRATIFY_PATH:-.}" --fail-on "${STRATIFY_FAIL_ON:-warning}" --format "${STRATIFY_FORMAT:-human}")
+if [[ -n "${STRATIFY_BASELINE:-}" ]]; then
+  args+=(--baseline "$STRATIFY_BASELINE")
+fi
+exec stratify "${args[@]}"
+```
+
+`scripts/test_action_run.sh`:
+
+```bash
+#!/usr/bin/env bash
+# Check that action-run.sh passes Action inputs as literal arguments.
+set -euo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+mkdir -p "$tmp/bin"
+cat >"$tmp/bin/stratify" <<'STUB'
+#!/usr/bin/env bash
+for a in "$@"; do printf '<%s>\n' "$a"; done
+STUB
+chmod +x "$tmp/bin/stratify"
+
+out="$(PATH="$tmp/bin:$PATH" STRATIFY_PATH="dir with space" STRATIFY_FAIL_ON=warning \
+  STRATIFY_FORMAT=human STRATIFY_BASELINE="base \$(touch $tmp/pwned).json" \
+  bash "$here/action-run.sh")"
+expected="<check>
+<dir with space>
+<--fail-on>
+<warning>
+<--format>
+<human>
+<--baseline>
+<base \$(touch $tmp/pwned).json>"
+if [[ "$out" != "$expected" ]]; then
+  echo "unexpected arguments:"
+  echo "$out"
+  exit 1
+fi
+if [[ -e "$tmp/pwned" ]]; then
+  echo "the baseline input was executed as shell code"
+  exit 1
+fi
+
+out="$(PATH="$tmp/bin:$PATH" STRATIFY_PATH=. STRATIFY_FAIL_ON=never STRATIFY_FORMAT=json \
+  STRATIFY_BASELINE= bash "$here/action-run.sh")"
+if [[ "$out" == *"--baseline"* ]]; then
+  echo "an empty baseline input must add no --baseline flag"
+  exit 1
+fi
+echo "ok"
+```
+
+Run: `bash scripts/test_action_run.sh`
+Expected: `ok`.
+
+`action.yml`:
+1. Add the input:
 
 ```yaml
   baseline:
-    description: "Optional path to a baseline file written by `stratify check --write-baseline`. When set, only findings absent from it are reported and gated."
+    description: "Optional path to a baseline file written by `stratify check --write-baseline`. When set, only findings absent from it are reported and gated. Relative to the job's working directory."
     default: ''
 ```
 
-and change the run step to:
+2. Replace the `Run quality gate` step with:
 
 ```yaml
-      run: |
-        args=(check "${{ inputs.path }}" --fail-on "${{ inputs.fail-on }}" --format "${{ inputs.format }}")
-        if [ -n "${{ inputs.baseline }}" ]; then
-          args+=(--baseline "${{ inputs.baseline }}")
-        fi
-        stratify "${args[@]}"
+    - name: Run quality gate
+      shell: bash
+      env:
+        STRATIFY_PATH: ${{ inputs.path }}
+        STRATIFY_FAIL_ON: ${{ inputs.fail-on }}
+        STRATIFY_FORMAT: ${{ inputs.format }}
+        STRATIFY_BASELINE: ${{ inputs.baseline }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/action-run.sh"
 ```
 
-`README.md`: add a row to the Action inputs table (`| \`baseline\` | \`''\` | Baseline file. Only findings absent from it are reported and gated. |`) and a section after "CI quality gate":
+`.github/workflows/ci.yml`: add a step after `Tests`:
+
+```yaml
+      - name: Script tests
+        run: bash scripts/test_action_run.sh
+```
+
+- [ ] **Step 7: Docs**
+
+`README.md`:
+- Add a row to the Action inputs table: `| \`baseline\` | \`''\` | Baseline file. Only findings absent from it are reported and gated. |`
+- Under the table, add: `Paths in \`path\` and \`baseline\` may contain spaces. Both are relative to the job's working directory. The Action passes inputs as environment variables, never as shell text.`
+- Add a section after "CI quality gate":
 
 ````markdown
 ## Adopt on an existing codebase (baseline)
@@ -1982,51 +2392,100 @@ stratify check . --baseline stratify-baseline.json --fail-on warning
 A baselined finding stays baselined when code above it moves. A missing or unreadable baseline file exits with code 2, so a broken path never passes the gate.
 ````
 
-`CHANGELOG.md` under `## [Unreleased]` `### Added`:
+`CHANGELOG.md` under `## [Unreleased]`:
+
 ```markdown
+### Added
 - `--write-baseline <file>` and `--baseline <file>`: record current findings,
   then report and gate only new ones. The GitHub Action takes a `baseline`
   input.
+
+### Fixed
+- The GitHub Action passes its inputs as environment variables instead of
+  interpolating them into the shell script, so a path with spaces or shell
+  syntax is passed through literally.
 ```
 
-- [ ] **Step 7: Run all tests, lint, commit**
+(Merge these into the existing `### Added` heading under `[Unreleased]`, and create `### Fixed` if it does not exist.)
+
+- [ ] **Step 8: Run all tests, lint, commit**
 
 ```bash
 cargo test --workspace
 cargo fmt --all && cargo clippy --all-targets -- -D warnings
-git add crates/stratify-cli action.yml README.md CHANGELOG.md Cargo.lock
+bash scripts/test_action_run.sh
+git add crates/stratify-cli action.yml scripts/action-run.sh scripts/test_action_run.sh \
+  .github/workflows/ci.yml README.md CHANGELOG.md Cargo.lock
 git commit -m "feat(cli): gate on new findings with a baseline file"
 ```
 
 ---
 
-### Task 7: Labelled corpus and precision script
+### Task 7: Labelled corpus and precision script (initial measurement)
 
 **Files:**
 - Create: `corpus/README.md`, `corpus/repos.json`, `corpus/labels/stratify.json`
 - Create: `scripts/precision.py`, `scripts/test_precision.py`
+- Modify: `.github/workflows/ci.yml`
 
 **Interfaces:**
 - Consumes: `stratify check <dir> --format json` output.
-- Produces: `python3 scripts/precision.py --stratify <bin> [--work <dir>] [--json]` printing precision per rule and language.
+- Produces: `python3 scripts/precision.py --stratify <bin> [--work <dir>] [--json]`. It prints one row per rule and language pair (6 rules × 6 languages = 36 rows). Exit codes:
+  - 0: the corpus is valid;
+  - 1: a clone, checkout, or scan failed (the command and its stderr are printed);
+  - 2: label validation failed (every error is printed).
 
-Label format, one file per corpus repo, `corpus/labels/<name>.json`:
+**Scope.** This task builds the measurement tool and records its first data: Rust `dead_code` on this repo. That data cannot satisfy the roadmap's per-rule, per-language precision gate. Every other pair reports `no-data`, `incomplete`, or `insufficient`. Phase 0 stays open (see Task 9).
 
-```json
-[
-  {"rule": "dead_code", "file": "crates/stratify-cli/src/lsp.rs", "line": 188, "match": "run_stdio", "label": "fp", "note": "called from main.rs:124"}
-]
-```
-
-`label` is `tp` (real problem) or `fp` (false positive). A finding matches a label when `rule` and `file` are equal, `line` equals `span.start_line`, and `match` is a substring of `message`.
-
-`corpus/repos.json`:
+**Label file format**, one per corpus repo, at `corpus/labels/<name>.json`:
 
 ```json
-[
-  {"name": "stratify", "url": "https://github.com/stratify-dev/stratify", "commit": "a809171"}
-]
+{
+  "repo": "stratify",
+  "complete_rules": ["dead_code"],
+  "labels": [
+    {"rule": "dead_code", "file": "crates/stratify-cli/src/lsp.rs", "line": 188, "match": "run_stdio", "label": "fp", "note": "called from main.rs:124"}
+  ]
+}
 ```
+
+- `label` is `tp` (a maintainer would act on it) or `fp` (the finding is wrong).
+- `complete_rules` lists the rules labelled exhaustively in this repo: every finding of those rules has a label. Labels for other rules are allowed but partial.
+
+**Matching.** A label matches a finding when all four hold:
+- `rule` is equal;
+- `file` is equal;
+- `line` equals `span.start_line`;
+- `match` is a substring of `message`.
+
+**Validation.** The script reports every error and exits 2 when any of these occur:
+- a label lacks one of `rule`, `file`, `line`, `match`, `label`, `note`;
+- a `rule` is not a known rule id, `line` is not an integer, or `label` is not `tp`/`fp`;
+- `complete_rules` is missing or names an unknown rule;
+- a label matches no finding (stale);
+- a label matches more than one finding (ambiguous);
+- a finding matches more than one label (duplicate);
+- a finding of a `complete_rules` rule matches no label (incomplete labelling).
+
+**Reporting.** Per rule and language pair, the script reports:
+- `findings`, `tp`, `fp`, `unlabelled`;
+- `repos`: the number of corpus repos contributing labelled findings;
+- `coverage` = (tp + fp) / findings;
+- `precision` = tp / (tp + fp);
+- `status`.
+
+`precision` counts labelled findings only. `coverage` shows how much of the pair it covers. Unlabelled findings never count as tp or fp, and a pair with any unlabelled finding cannot be gate-ready.
+
+Statuses:
+
+| Status | Condition |
+|---|---|
+| `no-data` | zero findings in the corpus |
+| `incomplete` | one or more unlabelled findings |
+| `insufficient` | fully labelled, but fewer than `MIN_REPOS = 2` repos or fewer than `MIN_LABELLED = 30` labelled findings |
+| `gate-ready` | fully labelled, with 2 or more repos and 30 or more labelled findings |
+
+The roadmap's precision targets apply only to `gate-ready` pairs. After the table, the script prints `gate-ready: N of 36 rule-language pairs. Precision targets apply only to gate-ready pairs.`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2035,38 +2494,88 @@ Label format, one file per corpus repo, `corpus/labels/<name>.json`:
 ```python
 import unittest
 
-from precision import language_of, match_label, tally
+from precision import classify, label_matches, language_of, summarize, validate_labels
 
 
 def finding(rule, file, line, message):
     return {"rule": rule, "message": message, "span": {"file": file, "start_line": line}}
 
 
-class PrecisionTest(unittest.TestCase):
+def label(rule, file, line, match, value="fp"):
+    return {"rule": rule, "file": file, "line": line, "match": match, "label": value, "note": "n"}
+
+
+class LanguageAndMatching(unittest.TestCase):
     def test_language_of(self):
         self.assertEqual(language_of("a/b.rs"), "rust")
         self.assertEqual(language_of("x.tsx"), "typescript")
         self.assertEqual(language_of("README.md"), "other")
 
-    def test_match_label_requires_rule_file_line_and_substring(self):
-        labels = [{"rule": "dead_code", "file": "a.rs", "line": 3, "match": "foo", "label": "fp"}]
-        self.assertEqual(match_label(finding("dead_code", "a.rs", 3, "unused function `foo`"), labels)["label"], "fp")
-        self.assertIsNone(match_label(finding("dead_code", "a.rs", 4, "unused function `foo`"), labels))
-        self.assertIsNone(match_label(finding("cycle", "a.rs", 3, "foo"), labels))
-        self.assertIsNone(match_label(finding("dead_code", "a.rs", 3, "unused function `bar`"), labels))
+    def test_match_requires_rule_file_line_and_substring(self):
+        lab = label("dead_code", "a.rs", 3, "foo")
+        self.assertTrue(label_matches(lab, finding("dead_code", "a.rs", 3, "unused function `foo`")))
+        self.assertFalse(label_matches(lab, finding("dead_code", "a.rs", 4, "unused function `foo`")))
+        self.assertFalse(label_matches(lab, finding("cycle", "a.rs", 3, "foo")))
+        self.assertFalse(label_matches(lab, finding("dead_code", "a.rs", 3, "unused function `bar`")))
 
-    def test_tally_counts_and_precision(self):
-        labels = [
-            {"rule": "dead_code", "file": "a.rs", "line": 1, "match": "x", "label": "tp"},
-            {"rule": "dead_code", "file": "a.rs", "line": 2, "match": "y", "label": "fp"},
-        ]
+
+class Validation(unittest.TestCase):
+    def test_schema_errors(self):
+        doc = {"complete_rules": ["nope"], "labels": [
+            {"rule": "dead_code", "file": "a.rs", "line": "3", "match": "x", "label": "maybe", "note": ""},
+            {"rule": "dead_code"},
+        ]}
+        errors = validate_labels(doc)
+        self.assertTrue(any("unknown rule in complete_rules" in e for e in errors), errors)
+        self.assertTrue(any("line must be an integer" in e for e in errors), errors)
+        self.assertTrue(any("label must be tp or fp" in e for e in errors), errors)
+        self.assertTrue(any("missing" in e for e in errors), errors)
+
+    def test_stale_ambiguous_duplicate_and_incomplete(self):
+        doc = {"complete_rules": ["dead_code"], "labels": [
+            label("dead_code", "a.rs", 1, "x"),
+            label("dead_code", "a.rs", 1, "x"),        # duplicate of the first
+            label("dead_code", "a.rs", 9, "gone"),     # stale
+            label("complexity", "b.rs", 2, ""),        # ambiguous: matches two findings
+        ]}
         findings = [
             finding("dead_code", "a.rs", 1, "x"),
-            finding("dead_code", "a.rs", 2, "y"),
-            finding("dead_code", "a.rs", 9, "z"),
+            finding("dead_code", "a.rs", 5, "unlabelled"),  # incomplete: rule is complete
+            finding("complexity", "b.rs", 2, "one"),
+            finding("complexity", "b.rs", 2, "two"),
         ]
-        rows = tally(findings, labels)
-        self.assertEqual(rows[("dead_code", "rust")], {"tp": 1, "fp": 1, "unlabelled": 1})
+        _, errors = classify(findings, doc, "r")
+        text = "\n".join(errors)
+        self.assertIn("matches 2 labels", text)
+        self.assertIn("stale", text)
+        self.assertIn("ambiguous", text)
+        self.assertIn("complete_rules", text)
+
+    def test_partial_rules_allow_unlabelled(self):
+        doc = {"complete_rules": [], "labels": [label("cycle", "a.rs", 1, "x", "tp")]}
+        outcomes, errors = classify([finding("cycle", "a.rs", 1, "x"), finding("cycle", "a.rs", 2, "y")], doc, "r")
+        self.assertEqual(errors, [])
+        self.assertEqual(sorted(o for _, _, o in outcomes), ["tp", "unlabelled"])
+
+
+class Summary(unittest.TestCase):
+    def row(self, rows, rule, lang):
+        return next(r for r in rows if r["rule"] == rule and r["language"] == lang)
+
+    def test_every_pair_is_reported(self):
+        self.assertEqual(len(summarize({})), 36)
+        self.assertEqual(self.row(summarize({}), "cycle", "go")["status"], "no-data")
+
+    def test_statuses(self):
+        rows = summarize({
+            "one": [("dead_code", "rust", "fp")] * 15 + [("cycle", "rust", "tp"), ("cycle", "rust", "unlabelled")],
+            "two": [("dead_code", "rust", "tp")] * 15 + [("complexity", "go", "tp")] * 40,
+        })
+        dead = self.row(rows, "dead_code", "rust")
+        self.assertEqual((dead["status"], dead["repos"], dead["precision"], dead["coverage"]), ("gate-ready", 2, 0.5, 1.0))
+        cyc = self.row(rows, "cycle", "rust")
+        self.assertEqual((cyc["status"], cyc["coverage"]), ("incomplete", 0.5))
+        self.assertEqual(self.row(rows, "complexity", "go")["status"], "insufficient")
 
 
 if __name__ == "__main__":
@@ -2085,14 +2594,16 @@ Expected: `ModuleNotFoundError: No module named 'precision'`.
 Usage: python3 scripts/precision.py --stratify target/release/stratify [--work DIR] [--json]
 
 For each repo in corpus/repos.json: clone it into the work dir (once), check out
-the pinned commit, scan it, and compare findings to corpus/labels/<name>.json.
-Precision = tp / (tp + fp). Unlabelled findings are counted but not scored.
+the pinned commit, scan it, and match findings to corpus/labels/<name>.json.
+Precision counts labelled findings only; coverage shows how much of a rule and
+language pair is labelled. Precision targets apply only to gate-ready pairs.
+
+Exit codes: 0 valid corpus, 1 clone/checkout/scan failure, 2 label errors.
 """
 import argparse
 import json
 import subprocess
 import sys
-from collections import defaultdict
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -2101,6 +2612,15 @@ EXTENSIONS = {
     "mts": "typescript", "cts": "typescript", "py": "python", "pyi": "python",
     "go": "go", "rs": "rust",
 }
+LANGUAGES = ["java", "ruby", "typescript", "python", "go", "rust"]
+RULES = ["dead_code", "duplication", "complexity", "hotspot", "cycle", "boundary"]
+LABEL_FIELDS = ("rule", "file", "line", "match", "label", "note")
+MIN_REPOS = 2
+MIN_LABELLED = 30
+
+
+class CorpusError(Exception):
+    """A clone, checkout, or scan failed."""
 
 
 def language_of(path):
@@ -2108,36 +2628,109 @@ def language_of(path):
     return EXTENSIONS.get(ext, "other")
 
 
-def match_label(finding, labels):
+def label_matches(label, finding):
     span = finding["span"]
-    for label in labels:
-        if (label["rule"] == finding["rule"] and label["file"] == span["file"]
-                and label["line"] == span["start_line"] and label["match"] in finding["message"]):
-            return label
-    return None
+    return (label["rule"] == finding["rule"] and label["file"] == span["file"]
+            and label["line"] == span["start_line"] and label["match"] in finding["message"])
 
 
-def tally(findings, labels):
-    rows = defaultdict(lambda: {"tp": 0, "fp": 0, "unlabelled": 0})
+def validate_labels(doc):
+    """Schema errors in one labels document, as strings."""
+    errors = []
+    complete = doc.get("complete_rules")
+    if not isinstance(complete, list):
+        errors.append("complete_rules must be a list")
+    else:
+        errors += [f"unknown rule in complete_rules: {r}" for r in complete if r not in RULES]
+    for i, lab in enumerate(doc.get("labels", [])):
+        missing = [k for k in LABEL_FIELDS if k not in lab]
+        if missing:
+            errors.append(f"label {i}: missing {', '.join(missing)}")
+            continue
+        if lab["rule"] not in RULES:
+            errors.append(f"label {i}: unknown rule {lab['rule']}")
+        if not isinstance(lab["line"], int):
+            errors.append(f"label {i}: line must be an integer")
+        if lab["label"] not in ("tp", "fp"):
+            errors.append(f"label {i}: label must be tp or fp")
+    return errors
+
+
+def classify(findings, doc, repo):
+    """Match findings to labels. Returns ([(rule, language, outcome)], errors)
+    where outcome is tp, fp, or unlabelled."""
+    labels = doc["labels"]
+    hits = [0] * len(labels)
+    outcomes, errors = [], []
     for f in findings:
-        key = (f["rule"], language_of(f["span"]["file"]))
-        label = match_label(f, labels)
-        rows[key][label["label"] if label else "unlabelled"] += 1
-    return dict(rows)
+        where = f"{f['span']['file']}:{f['span']['start_line']} {f['rule']}"
+        matched = [i for i, lab in enumerate(labels) if label_matches(lab, f)]
+        for i in matched:
+            hits[i] += 1
+        if len(matched) > 1:
+            errors.append(f"{repo}: finding {where} matches {len(matched)} labels (duplicate)")
+        if matched:
+            outcome = labels[matched[0]]["label"]
+        else:
+            outcome = "unlabelled"
+            if f["rule"] in doc["complete_rules"]:
+                errors.append(f"{repo}: finding {where} has no label, but {f['rule']} is in complete_rules")
+        outcomes.append((f["rule"], language_of(f["span"]["file"]), outcome))
+    for i, n in enumerate(hits):
+        where = f"label {i} ({labels[i]['file']}:{labels[i]['line']})"
+        if n == 0:
+            errors.append(f"{repo}: {where} matches no finding (stale)")
+        elif n > 1:
+            errors.append(f"{repo}: {where} matches {n} findings (ambiguous)")
+    return outcomes, errors
+
+
+def summarize(per_repo):
+    """per_repo: {repo: [(rule, language, outcome)]}. One row per rule x language."""
+    rows = []
+    for rule in RULES:
+        for lang in LANGUAGES:
+            counts = {"tp": 0, "fp": 0, "unlabelled": 0}
+            repos = set()
+            for repo, outcomes in per_repo.items():
+                for r, l, outcome in outcomes:
+                    if r == rule and l == lang:
+                        counts[outcome] += 1
+                        if outcome != "unlabelled":
+                            repos.add(repo)
+            labelled = counts["tp"] + counts["fp"]
+            total = labelled + counts["unlabelled"]
+            if total == 0:
+                status = "no-data"
+            elif counts["unlabelled"]:
+                status = "incomplete"
+            elif len(repos) < MIN_REPOS or labelled < MIN_LABELLED:
+                status = "insufficient"
+            else:
+                status = "gate-ready"
+            rows.append({
+                "rule": rule, "language": lang, "findings": total, **counts,
+                "repos": len(repos),
+                "coverage": round(labelled / total, 3) if total else None,
+                "precision": round(counts["tp"] / labelled, 3) if labelled else None,
+                "status": status,
+            })
+    return rows
+
+
+def run(cmd):
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise CorpusError(f"{' '.join(cmd)} exited {proc.returncode}: {proc.stderr.strip()}")
+    return proc.stdout
 
 
 def checkout(repo, work):
     dest = work / repo["name"]
     if not dest.exists():
-        subprocess.run(["git", "clone", "--quiet", repo["url"], str(dest)], check=True)
-    subprocess.run(["git", "-C", str(dest), "checkout", "--quiet", repo["commit"]], check=True)
+        run(["git", "clone", "--quiet", repo["url"], str(dest)])
+    run(["git", "-C", str(dest), "checkout", "--quiet", repo["commit"]])
     return dest
-
-
-def scan(stratify, path):
-    out = subprocess.run([stratify, "check", str(path), "--format", "json"],
-                         check=True, capture_output=True, text=True).stdout
-    return json.loads(out)["findings"]
 
 
 def main():
@@ -2150,27 +2743,40 @@ def main():
     work = Path(args.work)
     work.mkdir(parents=True, exist_ok=True)
     repos = json.loads((ROOT / "corpus" / "repos.json").read_text())
-    totals = defaultdict(lambda: {"tp": 0, "fp": 0, "unlabelled": 0})
-    for repo in repos:
-        labels = json.loads((ROOT / "corpus" / "labels" / f"{repo['name']}.json").read_text())
-        for key, row in tally(scan(args.stratify, checkout(repo, work)), labels).items():
-            for k, v in row.items():
-                totals[key][k] += v
+    per_repo, errors = {}, []
+    try:
+        for repo in repos:
+            doc = json.loads((ROOT / "corpus" / "labels" / f"{repo['name']}.json").read_text())
+            schema = validate_labels(doc)
+            if schema:
+                errors += [f"{repo['name']}: {e}" for e in schema]
+                continue
+            out = run([args.stratify, "check", str(checkout(repo, work)), "--format", "json"])
+            outcomes, errs = classify(json.loads(out)["findings"], doc, repo["name"])
+            per_repo[repo["name"]] = outcomes
+            errors += errs
+    except CorpusError as e:
+        print(f"precision: {e}", file=sys.stderr)
+        sys.exit(1)
+    if errors:
+        for e in errors:
+            print(f"precision: {e}", file=sys.stderr)
+        sys.exit(2)
 
-    result = []
-    for (rule, lang), row in sorted(totals.items()):
-        scored = row["tp"] + row["fp"]
-        precision = round(row["tp"] / scored, 3) if scored else None
-        result.append({"rule": rule, "language": lang, **row, "precision": precision})
-
+    rows = summarize(per_repo)
+    ready = sum(r["status"] == "gate-ready" for r in rows)
     if args.json:
-        json.dump(result, sys.stdout, indent=2)
+        json.dump({"rows": rows, "gate_ready": ready, "pairs": len(rows)}, sys.stdout, indent=2)
         print()
         return
-    print(f"{'rule':<12} {'language':<11} {'tp':>4} {'fp':>4} {'unlab':>6} {'precision':>9}")
-    for r in result:
-        p = "n/a" if r["precision"] is None else f"{r['precision']:.0%}"
-        print(f"{r['rule']:<12} {r['language']:<11} {r['tp']:>4} {r['fp']:>4} {r['unlabelled']:>6} {p:>9}")
+    print(f"{'rule':<12} {'language':<11} {'tp':>4} {'fp':>4} {'unlab':>6} {'repos':>5} {'coverage':>8} {'precision':>9}  status")
+    for r in rows:
+        cov = "n/a" if r["coverage"] is None else f"{r['coverage']:.0%}"
+        prec = "n/a" if r["precision"] is None else f"{r['precision']:.0%}"
+        print(f"{r['rule']:<12} {r['language']:<11} {r['tp']:>4} {r['fp']:>4} {r['unlabelled']:>6} "
+              f"{r['repos']:>5} {cov:>8} {prec:>9}  {r['status']}")
+    print(f"\ngate-ready: {ready} of {len(rows)} rule-language pairs. "
+          "Precision targets apply only to gate-ready pairs.")
 
 
 if __name__ == "__main__":
@@ -2178,20 +2784,35 @@ if __name__ == "__main__":
 ```
 
 Run: `cd scripts && python3 -m unittest test_precision -v`
-Expected: 3 tests pass.
+Expected: every test passes.
 
 - [ ] **Step 3: Label the self-scan dead-code findings**
 
-Check out commit `a809171` in a temp worktree (`git worktree add /tmp/stratify-a809171 a809171`), build the current branch's binary (`cargo build --release -p stratify-cli`), and scan the worktree with `--format json`. For each `dead_code` finding, find its caller with `grep -rn "<name>(" <worktree>/crates --include=*.rs` and record a label. Expected result: 15 findings, all `fp`, each with a `note` naming the call site (file and line) or `test-only helper under #[cfg(test)]`. Write them to `corpus/labels/stratify.json`. Do not label other rules in this task. If a finding has no caller, label it `tp` and say so in your report. Remove the worktree afterwards (`git worktree remove /tmp/stratify-a809171`).
+1. Check out commit `a809171` in a temp worktree: `git worktree add /tmp/stratify-a809171 a809171`.
+2. Build the current branch's binary: `cargo build --release -p stratify-cli`.
+3. Scan the worktree with `--format json`.
+4. For each `dead_code` finding, find its caller with `grep -rn "<name>(" /tmp/stratify-a809171/crates --include=*.rs`, and record a label.
+
+Expected result: 15 findings, all `fp`. Each label's `note` names the call site (file and line), or reads `test-only helper under #[cfg(test)]`. If a finding has no caller, label it `tp` and say so in your report.
+
+Write `corpus/labels/stratify.json` with `"repo": "stratify"`, `"complete_rules": ["dead_code"]`, and the labels. Do not label other rules in this task. Afterwards, remove the worktree with `git worktree remove /tmp/stratify-a809171`.
+
+`corpus/repos.json`:
+
+```json
+[
+  {"name": "stratify", "url": "https://github.com/stratify-dev/stratify", "commit": "a809171"}
+]
+```
 
 - [ ] **Step 4: Write `corpus/README.md`**
 
 ```markdown
 # Labelled corpus
 
-Real repositories at pinned commits, with Stratify findings marked true (`tp`)
-or false (`fp`). `scripts/precision.py` scans each repo and prints precision
-per rule and language.
+Real repositories at pinned commits, with Stratify findings marked true
+(`tp`) or false (`fp`). `scripts/precision.py` scans each repo and prints
+one row per rule and language.
 
     cargo build --release -p stratify-cli
     python3 scripts/precision.py --stratify target/release/stratify
@@ -2199,34 +2820,64 @@ per rule and language.
 ## Files
 
 - `repos.json`: name, clone URL, pinned commit.
-- `labels/<name>.json`: one entry per labelled finding: `rule`, `file`,
+- `labels/<name>.json`: `repo`, `complete_rules` (rules labelled
+  exhaustively in this repo), and `labels`, one per finding: `rule`, `file`,
   `line`, `match` (a substring of the message), `label`, `note`.
+
+## Matching and validation
+
+A label matches a finding when rule, file, and line are equal and `match`
+is a substring of the message. The script exits 2 and lists every problem
+when a label is malformed, matches no finding (stale), matches several
+findings (ambiguous), when a finding matches several labels, or when a
+finding of a `complete_rules` rule has no label.
 
 ## Rules for labelling
 
 - `tp` means a maintainer would act on the finding.
 - `fp` means the finding is wrong. Say why in `note`, with the call site or
   config that proves it.
-- Unlabelled findings count toward `unlab` and do not affect precision.
 - A label is tied to a pinned commit. Moving the commit means relabelling.
+
+## When a precision number counts
+
+Precision counts labelled findings only. A rule and language pair is
+`gate-ready` when every finding of that rule in that language is labelled,
+the labels come from 2 or more repos, and 30 or more findings are labelled.
+The roadmap's precision targets apply only to gate-ready pairs. Every other
+pair reports `no-data`, `incomplete`, or `insufficient`, and its precision
+number is a sample, not a measurement.
 
 ## Coverage
 
-| Repo | Language | Rules labelled |
-|------|----------|----------------|
+| Repo | Language | Rules labelled exhaustively |
+|------|----------|-----------------------------|
 | stratify @ a809171 | rust | dead_code |
 
-Each language needs one or more labelled repos before the roadmap's 80 percent
-precision gate can apply to it.
+Gate-ready pairs: 0 of 36. Phase 0 needs all 36.
 ```
 
-- [ ] **Step 5: Run the script end to end and commit**
+- [ ] **Step 5: CI, run end to end, commit**
+
+In `.github/workflows/ci.yml`, extend the `Script tests` step from Task 6 to:
+
+```yaml
+      - name: Script tests
+        run: |
+          bash scripts/test_action_run.sh
+          python3 -m unittest discover -s scripts -p 'test_*.py'
+```
 
 Run: `python3 scripts/precision.py --stratify target/release/stratify`
-Expected: a `dead_code rust` row with `fp` 15 (or the count from Step 3) and precision `0%`. Paste the table in your report.
+Expected:
+- a `dead_code rust` row with `fp` 15 (or the Step 3 count), coverage `100%`, and status `insufficient` (one repo, under 30 labels);
+- every other pair `no-data` or `incomplete`;
+- the footer `gate-ready: 0 of 36`.
+
+Paste the table into your report.
 
 ```bash
-git add corpus scripts/precision.py scripts/test_precision.py
+git add corpus scripts/precision.py scripts/test_precision.py .github/workflows/ci.yml
 git commit -m "feat(corpus): add a labelled corpus and a precision script"
 ```
 
@@ -2235,77 +2886,256 @@ git commit -m "feat(corpus): add a labelled corpus and a precision script"
 ### Task 8: Scan-time and memory benchmark
 
 **Files:**
-- Create: `scripts/bench.sh`
+- Modify: `crates/stratify-cli/src/run.rs`, `crates/stratify-cli/src/main.rs`
+- Create: `crates/stratify-cli/tests/e2e_stats.rs`
+- Create: `scripts/bench.py`, `scripts/test_bench.py`
 - Create: `docs/benchmarks.md`
 
 **Interfaces:**
-- Consumes: a built `stratify` binary.
-- Produces: `scripts/bench.sh <stratify-bin> <repo-path>` printing wall seconds, peak RSS in MB, file count, and line count for the six languages.
+- Consumes: `run::ScanStats` and `run::scan_stats`.
+- Produces:
+  - `ScanStats.lines_scanned: u64`: lines of every file the adapters parsed, after `[ignore]` globs and the walker's own skips. These are the files Stratify scans.
+  - `run::scan_stats(graph: &IrGraph, duration_ms: u64, lines_scanned: u64) -> ScanStats`
+  - `stratify check --stats` prints one line to stderr after the report: `stratify-stats {"files_scanned":..,"lines_scanned":..,"functions":..,"languages":[..],"duration_ms":..}`.
+  - `python3 scripts/bench.py --stratify <bin> <repo>` prints one JSON object: `files`, `lines`, `functions`, `wall_s`, `peak_rss_mb`. It exits non-zero on any failure (see Step 4).
 
-- [ ] **Step 1: Write the script**
+The counts come from Stratify itself, so the benchmark measures exactly the files the scan reads. The script uses no `grep -z`, `xargs` or `/usr/bin/time`, so it runs the same on macOS and Linux.
 
-```bash
-#!/usr/bin/env bash
-# Measure one full `stratify check` on a repo: wall time, peak memory, size.
-# Usage: scripts/bench.sh <stratify-bin> <repo-path>
-set -euo pipefail
+- [ ] **Step 1: Write the failing Rust tests**
 
-bin="$1"
-repo="$2"
-exts='\.(java|rb|ts|tsx|mts|cts|py|pyi|go|rs)$'
+In `run.rs` `stats_tests`, update the two existing `scan_stats` calls to pass a third argument (`0`). Add:
 
-files=$(git -C "$repo" ls-files | grep -E "$exts" | wc -l | tr -d ' ')
-lines=$(git -C "$repo" ls-files -z | grep -zE "$exts" | (cd "$repo" && xargs -0 cat) | wc -l | tr -d ' ')
-
-tmp=$(mktemp)
-if [[ "$(uname)" == "Darwin" ]]; then
-  /usr/bin/time -l "$bin" check "$repo" --format json >/dev/null 2>"$tmp" || true
-  rss_bytes=$(awk '/maximum resident set size/ {print $1}' "$tmp")
-  wall=$(awk '/ real / {print $1}' "$tmp")
-  rss_mb=$((rss_bytes / 1024 / 1024))
-else
-  /usr/bin/time -v "$bin" check "$repo" --format json >/dev/null 2>"$tmp" || true
-  rss_kb=$(awk -F: '/Maximum resident set size/ {gsub(/ /, "", $2); print $2}' "$tmp")
-  wall=$(awk '/Elapsed \(wall clock\)/ {print $NF}' "$tmp")
-  rss_mb=$((rss_kb / 1024))
-fi
-rm -f "$tmp"
-
-echo "files=$files lines=$lines wall_s=$wall peak_rss_mb=$rss_mb"
+```rust
+    #[test]
+    fn scan_counts_lines_of_parsed_files_only() {
+        let dir = std::env::temp_dir().join("stratify-stats-lines");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.rb"), "def a\nend\n\na\n").unwrap(); // 4 lines
+        std::fs::write(dir.join("notes.txt"), "not\nsource\n").unwrap(); // not parsed
+        let (_, stats) = analyze_repo_with_stats(&dir).unwrap();
+        assert_eq!(stats.files_scanned, 1);
+        assert_eq!(stats.lines_scanned, 4);
+    }
 ```
 
-`chmod +x scripts/bench.sh`. Test it on this repo: `scripts/bench.sh target/release/stratify .`. Expected: one line with all four values filled.
+`crates/stratify-cli/tests/e2e_stats.rs`:
 
-- [ ] **Step 2: Measure one large repo**
+```rust
+use std::path::Path;
+
+#[test]
+fn stats_flag_prints_one_json_line_on_stderr() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/sample-ruby");
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_stratify"))
+        .args(["check", dir.to_str().unwrap(), "--format", "json", "--stats"])
+        .output()
+        .expect("run stratify binary");
+    assert!(output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let line = stderr
+        .lines()
+        .find_map(|l| l.strip_prefix("stratify-stats "))
+        .unwrap_or_else(|| panic!("no stats line: {stderr}"));
+    let v: serde_json::Value = serde_json::from_str(line).unwrap();
+    let expected_lines: u64 = ["app.rb", "unused.rb"]
+        .iter()
+        .map(|f| std::fs::read_to_string(dir.join(f)).unwrap().lines().count() as u64)
+        .sum();
+    assert_eq!(v["files_scanned"], 2);
+    assert_eq!(v["lines_scanned"], expected_lines);
+    // stdout stays a clean JSON report
+    let _: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+}
+```
+
+Run: `cargo test -p stratify-cli scan_counts_lines && cargo test -p stratify-cli --test e2e_stats`
+Expected: compile error (`lines_scanned` not found).
+
+- [ ] **Step 2: Implement**
+
+In `run.rs`:
+1. Add `pub lines_scanned: u64` to `ScanStats`.
+2. Add a `lines_scanned: u64` parameter to `scan_stats` and store it.
+3. In `analyze_repo_with_stats`, declare `let mut lines_scanned: u64 = 0;` before the walk loop. Add `lines_scanned += source.lines().count() as u64;` right before `adapter.parse_file`, after the ignore check.
+4. Pass it to `scan_stats`.
+
+In `main.rs`:
+1. Add to `Command::Check`, and to its destructuring in `main`:
+
+```rust
+        /// Print scan statistics as one JSON line on stderr, prefixed `stratify-stats `.
+        #[arg(long = "stats")]
+        print_stats: bool,
+```
+
+2. Right after `analyze_repo_with_stats` succeeds, before any baseline handling:
+
+```rust
+            if print_stats {
+                eprintln!(
+                    "stratify-stats {}",
+                    serde_json::json!({
+                        "files_scanned": stats.files_scanned,
+                        "lines_scanned": stats.lines_scanned,
+                        "functions": stats.functions,
+                        "languages": stats.languages,
+                        "duration_ms": stats.duration_ms,
+                    })
+                );
+            }
+```
+
+Run: `cargo test --workspace`
+Expected: pass.
+
+- [ ] **Step 3: Write the failing script test**
+
+`scripts/test_bench.py`:
+
+```python
+import unittest
+
+from bench import parse_stats, peak_rss_mb
+
+
+class BenchTest(unittest.TestCase):
+    def test_parse_stats_finds_the_prefixed_line(self):
+        stderr = "warning: something\nstratify-stats {\"files_scanned\": 2, \"lines_scanned\": 9}\n"
+        self.assertEqual(parse_stats(stderr)["lines_scanned"], 9)
+
+    def test_parse_stats_without_line_raises(self):
+        with self.assertRaises(ValueError):
+            parse_stats("stratify: path not found\n")
+
+    def test_peak_rss_units(self):
+        self.assertEqual(peak_rss_mb(512 * 1024 * 1024, "darwin"), 512.0)  # bytes on macOS
+        self.assertEqual(peak_rss_mb(512 * 1024, "linux"), 512.0)          # KiB on Linux
+
+
+if __name__ == "__main__":
+    unittest.main()
+```
+
+Run: `cd scripts && python3 -m unittest test_bench -v`
+Expected: `ModuleNotFoundError: No module named 'bench'`.
+
+- [ ] **Step 4: Implement `scripts/bench.py`**
+
+```python
+#!/usr/bin/env python3
+"""Measure one full `stratify check` run: wall time, peak memory, and the
+files and lines Stratify itself reports scanning.
+
+Usage: python3 scripts/bench.py --stratify BIN REPO
+
+Prints one JSON object. Exits non-zero and prints the scan's stderr when the
+scan exits non-zero or prints no stats line. Runs the same on macOS and Linux.
+"""
+import argparse
+import json
+import resource
+import subprocess
+import sys
+import time
+
+STATS_PREFIX = "stratify-stats "
+
+
+def parse_stats(stderr):
+    for line in reversed(stderr.splitlines()):
+        if line.startswith(STATS_PREFIX):
+            return json.loads(line[len(STATS_PREFIX):])
+    raise ValueError("no stratify-stats line on stderr")
+
+
+def peak_rss_mb(ru_maxrss, platform):
+    """ru_maxrss is in bytes on macOS and in KiB on Linux."""
+    divisor = 1024 * 1024 if platform == "darwin" else 1024
+    return round(ru_maxrss / divisor, 1)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--stratify", required=True)
+    parser.add_argument("repo")
+    args = parser.parse_args()
+
+    cmd = [args.stratify, "check", args.repo, "--format", "json", "--stats"]
+    start = time.monotonic()
+    proc = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    wall = time.monotonic() - start
+    if proc.returncode != 0:
+        sys.stderr.write(proc.stderr)
+        sys.exit(f"bench: {' '.join(cmd)} exited {proc.returncode}")
+    try:
+        stats = parse_stats(proc.stderr)
+    except ValueError as e:
+        sys.stderr.write(proc.stderr)
+        sys.exit(f"bench: {e}")
+    rss = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+    print(json.dumps({
+        "files": stats["files_scanned"],
+        "lines": stats["lines_scanned"],
+        "functions": stats["functions"],
+        "wall_s": round(wall, 2),
+        "peak_rss_mb": peak_rss_mb(rss, sys.platform),
+    }))
+
+
+if __name__ == "__main__":
+    main()
+```
+
+Run: `cd scripts && python3 -m unittest test_bench -v`
+Expected: pass.
+
+Run on this repo: `cargo build --release -p stratify-cli && python3 scripts/bench.py --stratify target/release/stratify .`
+Expected: one JSON line with every value filled.
+
+Check failure reporting: `python3 scripts/bench.py --stratify target/release/stratify /no/such/path; echo "exit $?"`
+Expected: stratify's `path not found` message and a non-zero exit.
+
+- [ ] **Step 5: Measure one large repo**
 
 ```bash
 git clone --depth 1 --branch v1.31.0 https://github.com/kubernetes/kubernetes /tmp/k8s
-scripts/bench.sh target/release/stratify /tmp/k8s
+python3 scripts/bench.py --stratify target/release/stratify /tmp/k8s
 ```
 
-If the clone fails (no network), stop and report it. Do not substitute a smaller repo without saying so.
+If the clone or the scan fails, record the failure and its message in your report. Do not substitute a smaller repo. A missing large-repo row keeps Phase 0 open.
 
-- [ ] **Step 3: Record and commit**
+- [ ] **Step 6: Record and commit**
 
 `docs/benchmarks.md`:
 
 ```markdown
 # Benchmarks
 
-Full `stratify check --format json` runs, measured with `scripts/bench.sh`.
-The roadmap's scan-time budget comes from these numbers.
+Full `stratify check --format json` runs measured with `scripts/bench.py`.
+Files and lines are what Stratify reports scanning (`--stats`), after
+`.gitignore`, hidden-file skips, and `[ignore]` globs. The roadmap's
+scan-time budget comes from the large-repo row.
 
 | Date | Stratify | Repo | Files | Lines | Wall (s) | Peak RSS (MB) | Machine |
 |------|----------|------|-------|-------|----------|---------------|---------|
-| <date> | <git rev-parse --short HEAD> | kubernetes v1.31.0 | <files> | <lines> | <wall> | <rss> | <uname -sm, CPU model> |
-| <date> | <rev> | stratify (self) | ... | ... | ... | ... | ... |
+| <date> | <git rev-parse --short HEAD> | stratify (self) | ... | ... | ... | ... | <uname -sm, CPU model> |
+| <date> | <rev> | kubernetes v1.31.0 | ... | ... | ... | ... | ... |
 ```
 
-Fill every cell from the measured output. Then:
+Fill every cell from measured output. If Step 5 failed, write the kubernetes row as `not measured: <reason>` in the Files cell and leave the rest empty.
+
+In `CHANGELOG.md` under `## [Unreleased]` `### Added`:
+
+```markdown
+- `--stats` prints scan statistics (files, lines, functions, languages,
+  duration) as one `stratify-stats` JSON line on stderr.
+```
 
 ```bash
-git add scripts/bench.sh docs/benchmarks.md
-git commit -m "docs: record a scan-time and memory baseline"
+cargo fmt --all && cargo clippy --all-targets -- -D warnings && cargo test --workspace
+git add crates/stratify-cli scripts/bench.py scripts/test_bench.py docs/benchmarks.md CHANGELOG.md
+git commit -m "feat(cli): add --stats and a cross-platform scan benchmark"
 ```
 
 ---
@@ -2315,15 +3145,28 @@ git commit -m "docs: record a scan-time and memory baseline"
 **Files:**
 - Modify: `docs/roadmap-full-stack-static-analysis.md`
 
+The roadmap's Phase 0 exit criteria, Phase 1 evidence contract, and schema decision are already in place. This task records status only.
+
 - [ ] **Step 1: Edit the roadmap**
 
-1. In "Where Stratify stands today", change the Languages row to `All six languages get six of six`, the Findings row to note `related` and `reasons`, and the Gate row to `--fail-on severity threshold, --baseline new-findings gate, stratify-ignore line suppression`.
-2. In Phase 1, replace work item 3 (`Report schema version 2. Additive only.`) with `Optional evidence fields on a version 1 schema. stratify-judge skips judgment on any unknown schema version, so additive fields do not bump it.` Update the exit criterion `stratify-judge reads a version 2 report` to `stratify-judge judges a report with evidence fields with no change in verdicts`.
-3. Under Phase 0 and Phase 1 add a `Status:` line listing what shipped (with the benchmark and precision numbers from `docs/benchmarks.md` and the Task 7 table) and what remains: labelled repos for the other five languages.
+1. In "Where Stratify stands today", update three rows:
+   - Languages: `All six languages get six of six`.
+   - Findings: add `related`, `path`, and `reasons`.
+   - Gate: `--fail-on severity threshold, --baseline new-findings gate, stratify-ignore comment suppression`.
+2. Under Phase 0, add a `Status: in progress.` line. Follow it with a list of what shipped and what remains:
+   - shipped: Rust cycles and boundaries; the precision tool; the first labels (quote the Task 7 table's dead_code rust row and the `gate-ready: N of 36` footer); the benchmark tool and the self-scan row from `docs/benchmarks.md`;
+   - remaining: labelled repos until all 36 rule-language pairs are gate-ready; the large-repo benchmark row, if `docs/benchmarks.md` marks it `not measured`; the scan-time budget, which is set from that row.
+   - Do not call Phase 0 complete.
+3. Under Phase 1, add a `Status:` line listing the shipped items:
+   - rule registry;
+   - evidence fields and the SARIF mapping;
+   - comment suppression;
+   - baseline gate.
+   - Phase 1's judge-compatibility exit test needs a run of `stratify-judge` against a report with evidence fields. Mark it `not yet run` unless someone has run it.
 
 - [ ] **Step 2: Commit**
 
 ```bash
 git add docs/roadmap-full-stack-static-analysis.md
-git commit -m "docs: mark roadmap phase 0 and 1 progress"
+git commit -m "docs: record roadmap phase 0 and phase 1 status"
 ```

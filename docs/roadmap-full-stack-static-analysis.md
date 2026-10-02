@@ -72,14 +72,22 @@ Work:
 
 1. Add Rust `use` and `mod` resolution so Rust gets cycles and layer boundaries. The README already promises this.
 2. Commit a labelled corpus: real repos per language, each finding marked true or false. The August tool-comparison fixtures were never committed. Start from them.
-3. Add a script comparing a scan against the labels and printing precision per rule and language.
-4. Record scan time and peak memory on one repo above 500k lines.
+3. Add a script that compares a scan against the labels and validates the labels. It rejects stale, ambiguous and duplicate labels, and unlabelled findings of a rule declared fully labelled. It reports precision, coverage and status for every rule-language pair.
+4. Record scan time and peak memory on one repo above 500k lines. Use the file and line counts Stratify reports scanning.
+
+A rule-language pair is gate-ready when three conditions hold:
+
+- every finding of that rule in that language in the corpus carries a label;
+- the labels come from 2 or more repos;
+- 30 or more findings are labelled.
+
+Precision counts labelled findings only. A pair that is not gate-ready reports a sample, not a measurement. Every precision target in this roadmap applies to gate-ready pairs only.
 
 Exit:
 
 - Rust gets six of six analyses.
-- A precision number exists for every rule in every language.
-- A scan-time and memory baseline exists for one large repo.
+- All 36 rule-language pairs are gate-ready, each with a precision number.
+- A scan-time and memory baseline exists for one repo above 500k lines.
 
 ## Phase 1: Findings model and adoption basics
 
@@ -88,16 +96,26 @@ Objective: give findings enough structure to explain flow results, and give team
 Work:
 
 1. Rule registry: id, default severity, category, supported languages, tags, remediation text.
-2. Finding evidence: a list of related spans, each with a role, plus an ordered reason chain. Map both to SARIF `relatedLocations` and `codeFlows`.
-3. Report schema version 2. Additive only.
-4. Line-level suppression comment with a required rule id.
+2. Finding evidence, in three optional fields:
+   - `related`: supporting spans with roles, in no particular order.
+   - `path`: the ordered steps of a flow. A cycle's files now, a taint path's hops in Phase 5.
+   - `reasons`: an ordered reason chain.
+
+   SARIF mapping:
+   - `related` becomes `relatedLocations`.
+   - `path` becomes one `codeFlows` entry holding one thread flow, with one location per step in path order and `executionOrder` counting from 1.
+   - `reasons` becomes `properties.reasons`, and also the code flow's message when a path exists.
+
+   A reason has no location, so it never becomes a thread-flow step.
+3. Optional evidence fields on schema version 1. `stratify-judge` skips judgment on any schema version it does not know, so additive fields do not bump the version.
+4. Line-level suppression comment with a required rule id. The marker counts only inside a comment node of the file's grammar, never inside a string literal.
 5. Baseline file and a gate mode failing only on findings absent from the baseline.
 
 Exit:
 
-- All six analyses emit evidence. A cycle finding lists every file in the cycle. A duplication finding lists every clone site.
+- All six analyses emit evidence. A cycle finding carries every file in the cycle as an ordered path. A duplication finding lists every clone site.
 - The GitHub Action gates on new findings only.
-- `stratify-judge` reads a version 2 report with no change in verdicts.
+- `stratify-judge` judges a report carrying evidence fields with no change in verdicts.
 
 ## Phase 2: Call and type resolution
 
