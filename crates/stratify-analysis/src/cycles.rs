@@ -34,19 +34,31 @@ pub fn analyze(graph: &IrGraph) -> Vec<Finding> {
                     .unwrap_or_else(|| fqn.clone())
             })
             .collect();
-        let span = spans.get(&cycle[0]).cloned().unwrap_or(Span {
+        let fallback = Span {
             file: files[0].clone(),
             start_byte: 0,
             end_byte: 0,
             start_line: 1,
-        });
-        findings.push(Finding {
-            rule: "cycle".into(),
-            severity: Severity::Warning,
-            message: format!("circular dependency: {}", files.join(" -> ")),
+        };
+        let span = spans.get(&cycle[0]).cloned().unwrap_or(fallback.clone());
+        let mut finding = Finding::new(
+            "cycle",
+            Severity::Warning,
+            format!("circular dependency: {}", files.join(" -> ")),
             span,
-            confidence: Confidence::Certain,
-        });
+            Confidence::Certain,
+        );
+        for (i, fqn) in cycle.iter().enumerate() {
+            let step_span = spans.get(fqn).cloned().unwrap_or(fallback.clone());
+            finding = finding.with_path_step(
+                step_span,
+                "cycle_member",
+                format!("imports {}", files[(i + 1) % files.len()]),
+            );
+        }
+        findings.push(finding.with_reason(
+            "each file in the cycle imports the next, and the last imports the first",
+        ));
     }
     findings
 }
@@ -110,6 +122,24 @@ mod tests {
         assert_eq!(findings[0].rule, "cycle");
         assert!(findings[0].message.contains("a.rb"));
         assert!(findings[0].message.contains("b.rb"));
+    }
+
+    #[test]
+    fn cycle_records_members_as_an_ordered_path() {
+        let mut g = IrGraph::new();
+        let a = file_sym(&mut g, "a.rb");
+        let b = file_sym(&mut g, "b.rb");
+        let c = file_sym(&mut g, "c.rb");
+        add_import(&mut g, a, "b.rb");
+        add_import(&mut g, b, "c.rb");
+        add_import(&mut g, c, "a.rb");
+        let f = &analyze(&g)[0];
+        let files: Vec<&str> = f.path.iter().map(|r| r.span.file.as_str()).collect();
+        assert_eq!(files, vec!["a.rb", "b.rb", "c.rb"]);
+        assert!(f.path.iter().all(|r| r.role == "cycle_member"));
+        assert_eq!(f.path[2].message, "imports a.rb");
+        assert!(f.related.is_empty());
+        assert!(!f.reasons.is_empty());
     }
 
     #[test]

@@ -171,15 +171,31 @@ pub fn analyze(graph: &IrGraph, config: &BoundaryConfig) -> Vec<Finding> {
                     end_byte: 0,
                     start_line: 1,
                 });
-                findings.push(Finding {
-                    rule: "boundary".into(),
-                    severity: Severity::Warning,
-                    message: format!(
-                        "layer `{src_layer}` must not import `{tgt_layer}` ({src} -> {tgt})"
-                    ),
-                    span,
-                    confidence: Confidence::Certain,
+                let tgt_span = span_of.get(tgt).cloned().unwrap_or(Span {
+                    file: tgt.clone(),
+                    start_byte: 0,
+                    end_byte: 0,
+                    start_line: 1,
                 });
+                findings.push(
+                    Finding::new(
+                        "boundary",
+                        Severity::Warning,
+                        format!(
+                            "layer `{src_layer}` must not import `{tgt_layer}` ({src} -> {tgt})"
+                        ),
+                        span,
+                        Confidence::Certain,
+                    )
+                    .with_related(
+                        tgt_span,
+                        "imported_file",
+                        format!("{tgt} is in layer `{tgt_layer}`"),
+                    )
+                    .with_reason(format!(
+                        "stratify.toml forbids layer `{src_layer}` from importing layer `{tgt_layer}`"
+                    )),
+                );
             }
         }
     }
@@ -231,6 +247,9 @@ mod tests {
         assert_eq!(findings[0].rule, "boundary");
         assert!(findings[0].message.contains("models"));
         assert!(findings[0].message.contains("controllers"));
+        assert_eq!(findings[0].related.len(), 1);
+        assert_eq!(findings[0].related[0].role, "imported_file");
+        assert_eq!(findings[0].related[0].span.file, "controllers/users.rb");
     }
 
     #[test]

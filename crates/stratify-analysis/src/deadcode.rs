@@ -80,21 +80,34 @@ pub fn analyze(graph: &IrGraph, mode: DeadCodeMode) -> Vec<Finding> {
         let low_confidence = reached_any.contains(&s.id)
             || (s.visibility == Visibility::Public && mode == DeadCodeMode::Library);
         if low_confidence {
-            findings.push(Finding {
-                rule: "dead_code".into(),
-                severity: Severity::Info,
-                message: format!("possibly unused function `{}`", s.name),
-                span: s.span.clone(),
-                confidence: Confidence::Likely,
-            });
+            let mut finding = Finding::new(
+                "dead_code",
+                Severity::Info,
+                format!("possibly unused function `{}`", s.name),
+                s.span.clone(),
+                Confidence::Likely,
+            );
+            if reached_any.contains(&s.id) {
+                finding = finding.with_reason(
+                    "reached only through a name-matched call, which cannot prove this exact function is the target",
+                );
+            }
+            if s.visibility == Visibility::Public && mode == DeadCodeMode::Library {
+                finding = finding
+                    .with_reason("public in library mode: code outside this scan may call it");
+            }
+            findings.push(finding);
         } else {
-            findings.push(Finding {
-                rule: "dead_code".into(),
-                severity: Severity::Warning,
-                message: format!("unused function `{}`", s.name),
-                span: s.span.clone(),
-                confidence: Confidence::Certain,
-            });
+            findings.push(
+                Finding::new(
+                    "dead_code",
+                    Severity::Warning,
+                    format!("unused function `{}`", s.name),
+                    s.span.clone(),
+                    Confidence::Certain,
+                )
+                .with_reason("no call from any entrypoint reaches this function"),
+            );
         }
     }
     findings
@@ -155,6 +168,31 @@ mod tests {
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].severity, Severity::Warning);
         assert!(findings[0].message.contains("orphan"));
+    }
+
+    #[test]
+    fn certain_dead_code_explains_why() {
+        let mut g = IrGraph::new();
+        func(&mut g, "orphan");
+        let f = &analyze(&g, DeadCodeMode::Library)[0];
+        assert_eq!(
+            f.reasons,
+            vec!["no call from any entrypoint reaches this function"]
+        );
+    }
+
+    #[test]
+    fn public_library_symbol_explains_why() {
+        let mut g = IrGraph::new();
+        sym_with_visibility(&mut g, "api", Visibility::Public);
+        let f = &analyze(&g, DeadCodeMode::Library)[0];
+        assert!(
+            f.reasons
+                .iter()
+                .any(|r| r.contains("public in library mode")),
+            "{:?}",
+            f.reasons
+        );
     }
 
     #[test]

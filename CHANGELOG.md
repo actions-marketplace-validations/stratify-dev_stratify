@@ -16,6 +16,12 @@ backward-compatible).
 - A rule registry: each rule carries a name, category, default severity,
   tags, and fix guidance. SARIF output now includes `help` text,
   `defaultConfiguration`, and tags for every rule.
+- Findings carry evidence: `related` locations (clone sites, the file a
+  forbidden import points at), an ordered `path` (the files of a cycle), and
+  a `reasons` chain. All three are optional and omitted when empty, so the
+  JSON schema stays at version 1. SARIF maps `related` to
+  `relatedLocations`, `path` to one ordered `codeFlows` thread flow, and
+  `reasons` to `properties.reasons` (and to the code flow's message).
 
 ### Changed
 - The Rust adapter records `use` declarations as imports, and a Rust file's

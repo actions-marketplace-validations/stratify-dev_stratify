@@ -354,18 +354,18 @@ mod tests {
     }
 
     fn make_report(severity: Severity) -> Report {
-        Report::new(vec![Finding {
-            rule: "dead_code".into(),
+        Report::new(vec![Finding::new(
+            "dead_code",
             severity,
-            message: "unused".into(),
-            span: Span {
+            "unused",
+            Span {
                 file: "A.java".into(),
                 start_byte: 0,
                 end_byte: 1,
                 start_line: 1,
             },
-            confidence: Confidence::Certain,
-        }])
+            Confidence::Certain,
+        )])
     }
 
     #[test]

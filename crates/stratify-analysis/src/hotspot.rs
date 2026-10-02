@@ -29,16 +29,21 @@ pub fn analyze(
         if score <= threshold {
             continue;
         }
-        findings.push(Finding {
-            rule: "hotspot".into(),
-            severity: Severity::Info,
-            message: format!(
-                "hotspot: `{}` complexity {cx} x churn {ch} = {score}",
-                s.name
-            ),
-            span: s.span.clone(),
-            confidence: Confidence::Certain,
-        });
+        findings.push(
+            Finding::new(
+                "hotspot",
+                Severity::Info,
+                format!(
+                    "hotspot: `{}` complexity {cx} x churn {ch} = {score}",
+                    s.name
+                ),
+                s.span.clone(),
+                Confidence::Certain,
+            )
+            .with_reason(format!(
+                "complexity {cx} x churn {ch} = {score} exceeds the threshold of {threshold}"
+            )),
+        );
     }
     findings
 }
