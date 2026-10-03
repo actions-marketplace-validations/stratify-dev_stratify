@@ -89,3 +89,12 @@ The label-validation gap was reproduced directly: a numeric `match` field passes
 ## Sign-off
 
 Do not claim full Phase 0 completion until corpus precision criteria, the scan-time budget, and the completed large-repository benchmark are all satisfied. Do not claim hosted-CI verification until the branch is pushed and the configured CI job passes. Fix and test strict corpus-label validation before relying on the precision tool as a gate.
+
+## Resolution (2026-10-03)
+
+- [x] 1. Label schema validation: `0a64a92` and `ddcb203`. All corpus inputs validate before any clone. Malformed input of any kind, including unparseable JSON, exits 2 with a concise error. Exit 1 covers only clone, checkout, and scan failures.
+- [x] 2. QA review status: `docs/superpowers/2026-10-02-roadmap-phase-0-1-qa.md` has a current-status section and labels the original sections as the initial review.
+- [x] 3. Remote wording: `docs/roadmap-full-stack-static-analysis.md` now says local `main` tracks `origin/main`, is ahead, and is not pushed.
+- [ ] 4. Hosted CI: open. The owner decided that nothing is pushed in this round. The roadmap keeps the wording "configured and passing locally, hosted run pending" and notes the 2 SARIF schema tests skip locally without `jsonschema`.
+- [ ] 5. Precision evidence: open. The owner decided to plan the corpus growth now and label later. See `docs/superpowers/plans/2026-10-03-corpus-growth.md`. 0 of 36 pairs are gate-ready.
+- [x] 6. Scan-time budget: set by the owner at 180 s wall and 16 GiB peak RSS, recorded in the roadmap Phase 0 section. The reference run (90.27 s, 8,186.5 MiB at `090da17`) meets it.

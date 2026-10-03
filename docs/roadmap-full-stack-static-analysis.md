@@ -62,7 +62,7 @@ Settle these before Phase 2 starts.
 | Source of type facts | tree-sitter only, or import facts from external indexers (SCIP, `tsc`, `gopls`) | tree-sitter first. Add an optional SCIP import when a language stalls below the precision target |
 | First flow language | TypeScript, Python, Go, Java, Ruby | TypeScript: explicit imports, type annotations in source, high demand for security rules. Go is the lower-risk alternative |
 | Precision target | Any number | 80 percent per rule, per language, before Warning |
-| Scan-time budget | Any number | Set in Phase 0 from a measured run on a repo above 500k lines. The row exists (kubernetes, 90.27 s). The owner chooses the number |
+| Scan-time budget | Any number | Decided by the owner: at most 180 s wall and at most 16 GiB peak RSS on kubernetes v1.31.0 (`9edcffc`), release build, M5-class hardware, via `scripts/bench.py`. Reference run: 90.27 s and 8,186.5 MiB at `090da17` |
 
 ## Phase 0: Baseline and measurement
 
@@ -87,10 +87,11 @@ Shipped:
 Remaining:
 
 - Labelled repos for every applicable pair. Today 0 of 36 are gate-ready, 31 pairs are `no-data`, and 4 more are `incomplete` with no labels, so 35 of 36 pairs have no labels.
-- The scan-time budget. The large-repo row now exists. Choosing the budget from it is the owner's decision. This document sets none.
-- Pushing `main`, so the corpus pin `a809171` is reachable from the default clone URL.
+- [x] The scan-time budget. The owner set it: at most 180 s wall and at most 16 GiB peak RSS for a full `stratify check --format json` of kubernetes v1.31.0 (`9edcffc`), on a release build, on M5-class hardware, measured with `scripts/bench.py`. The reference run at `090da17` took 90.27 s and 8,186.5 MiB (about 8.0 GiB), so it meets the budget.
+- Pushing `main`, so the corpus pin `a809171` is reachable from a clean clone of the default remote branch. Local `main` tracks `origin/main` and is ahead of it.
+- Corpus growth. See `docs/superpowers/plans/2026-10-03-corpus-growth.md`.
 
-Phase 0 stays open until every applicable pair is gate-ready and the owner sets the scan-time budget. The large-repo benchmark is done.
+Phase 0 stays open until every applicable pair is gate-ready. The budget is set and the large-repo benchmark is done.
 
 Work:
 
@@ -116,10 +117,11 @@ Exit:
 - Every not-applicable pair carries a reviewed reason in `corpus/applicability.json`.
 - The Phase 0 status lists every unmeasured pair explicitly.
 - A scan-time and memory baseline exists for one repo above 500k lines.
+- The scan-time budget holds: at most 180 s wall and at most 16 GiB peak RSS on kubernetes v1.31.0. Met by the reference run at `090da17`.
 
 ## Phase 1: Findings model and adoption basics
 
-Status: shipped: rule registry, evidence fields with the SARIF mapping, comment suppression, and the baseline gate with the hardened Action. SARIF output validates against the official OASIS 2.1.0 schema locally, and a CI step for the check is configured (`3f02fcf`). The branch has no remote, so no CI run exists yet. A CI run is pending until the branch is pushed. Unknown rule ids in suppression markers print a warning on stderr (`39c2e10`). The judge-compatibility test passes by code inspection and request capture. `docs/judge-compat.md` records the result: the judge never reads the evidence fields, a request capture showed 32 identical bodies per variant, and three live runs show only model noise (run 3 had 2 changed rows, which the identical captured requests explain as model nondeterminism). All three live runs exited 1 under the script's own criterion (`c6aea0b`, `197d25e`, `90d3a73`).
+Status: shipped: rule registry, evidence fields with the SARIF mapping, comment suppression, and the baseline gate with the hardened Action. SARIF output validates against the official OASIS 2.1.0 schema locally, and a CI step for the check is configured (`3f02fcf`). Local `main` tracks `origin/main` and is ahead of it, and the new commits have not been pushed. Hosted CI has not run. The checks are configured and pass locally, and the 2 SARIF schema tests skip locally when `jsonschema` is missing, while the CI step installs it. A hosted run is pending until the commits are pushed. Unknown rule ids in suppression markers print a warning on stderr (`39c2e10`). The judge-compatibility test passes by code inspection and request capture. `docs/judge-compat.md` records the result: the judge never reads the evidence fields, a request capture showed 32 identical bodies per variant, and three live runs show only model noise (run 3 had 2 changed rows, which the identical captured requests explain as model nondeterminism). All three live runs exited 1 under the script's own criterion (`c6aea0b`, `197d25e`, `90d3a73`).
 
 Objective: give findings enough structure to explain flow results, and give teams a way to adopt a new rule without a wall of old findings.
 

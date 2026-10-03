@@ -4,13 +4,23 @@ Date: 2026-10-02
 Reviewed plan: [`plans/2026-10-01-roadmap-phase-0-1.md`](plans/2026-10-01-roadmap-phase-0-1.md)  
 Roadmap: [`../roadmap-full-stack-static-analysis.md`](../roadmap-full-stack-static-analysis.md)
 
-## QA verdict
+## Current status (2026-10-03)
+
+- The large-repo benchmark and the performance fix are complete. Kubernetes v1.31.0 scans in 90.27 s at 8,186.5 MiB peak RSS (`090da17`).
+- The scan-time budget is set: at most 180 s wall and at most 16 GiB peak RSS. The reference run meets it.
+- Precision is still open. 0 of 36 pairs are gate-ready.
+- Hosted CI is pending. Local `main` tracks `origin/main` and is ahead of it. The commits are not pushed, so no CI run exists.
+- Phase 0 stays in progress. Phase 1 is implemented and verified locally, not by hosted CI.
+
+The sections below up to the Resolution record the initial review of 2026-10-02. Read them as that snapshot.
+
+## QA verdict (initial review, 2026-10-02)
 
 The Phase 1 implementation is in good shape for continued integration. The changes reviewed cover the requested behaviors, and the checks listed below passed. Phase 0 is **not complete**: the corpus does not yet establish precision across the rule-language matrix, and the large-repository scan has not produced a completed timing and memory measurement.
 
 Do not announce Phase 0 completion or set the scan-time budget until the outstanding acceptance requirements in this document are met. Resolve the open measurement and process items before treating this plan as a release sign-off.
 
-## Review findings
+## Review findings (initial review, 2026-10-02)
 
 ### 1. Precision exit criterion needs a credible path for sparse rules
 
@@ -61,7 +71,7 @@ The benchmark table records an earlier Stratify revision. The QA run of the curr
 
 **Requirement:** Keep benchmark rows tied to their exact commit and build profile. Add a new release-build self-scan row for the final implementation when recording the large-repository measurement. Do not compare the debug QA run to the earlier release result as if the only difference were code changes.
 
-## Verification performed
+## Verification performed (initial review, 2026-10-02)
 
 The following checks passed in the reviewed checkout:
 
