@@ -9,7 +9,8 @@ Precision counts labelled findings only; coverage shows how much of a rule and
 language pair is labelled. Precision targets apply only to gate-ready pairs.
 Pairs listed in <corpus>/applicability.json report not-applicable.
 
-Exit codes: 0 valid corpus, 1 clone/checkout/scan failure, 2 label errors.
+Exit codes: 0 valid corpus, 1 clone/checkout/scan failure, 2 invalid corpus input
+or label errors. Every input is validated before any clone.
 """
 import argparse
 import json
@@ -45,6 +46,10 @@ def label_matches(label, finding):
             and label["line"] == span["start_line"] and label["match"] in finding["message"])
 
 
+def non_empty(value):
+    return isinstance(value, str) and bool(value.strip())
+
+
 def validate_labels(doc):
     """Schema errors in one labels document, as strings."""
     if not isinstance(doc, dict):
@@ -54,7 +59,16 @@ def validate_labels(doc):
     if not isinstance(complete, list):
         errors.append("complete_rules must be a list")
     else:
-        errors += [f"unknown rule in complete_rules: {r}" for r in complete if r not in RULES]
+        seen = set()
+        for r in complete:
+            if not isinstance(r, str):
+                errors.append(f"complete_rules entry {r!r} must be a string")
+            elif r not in RULES:
+                errors.append(f"unknown rule in complete_rules: {r}")
+            elif r in seen:
+                errors.append(f"duplicate rule in complete_rules: {r}")
+            else:
+                seen.add(r)
     labels = doc.get("labels")
     if not isinstance(labels, list):
         errors.append("labels must be a list")
@@ -67,12 +81,38 @@ def validate_labels(doc):
         if missing:
             errors.append(f"label {i}: missing {', '.join(missing)}")
             continue
-        if lab["rule"] not in RULES:
+        for key in ("rule", "file", "match", "label", "note"):
+            if not non_empty(lab[key]):
+                errors.append(f"label {i}: {key} must be a non-empty string")
+        if non_empty(lab["rule"]) and lab["rule"] not in RULES:
             errors.append(f"label {i}: unknown rule {lab['rule']}")
-        if not isinstance(lab["line"], int):
-            errors.append(f"label {i}: line must be an integer")
-        if lab["label"] not in ("tp", "fp"):
+        line = lab["line"]
+        if not isinstance(line, int) or isinstance(line, bool) or line < 1:
+            errors.append(f"label {i}: line must be an integer of at least 1")
+        if non_empty(lab["label"]) and lab["label"] not in ("tp", "fp"):
             errors.append(f"label {i}: label must be tp or fp")
+    return errors
+
+
+def validate_manifest(doc):
+    """Schema errors in repos.json, as strings."""
+    if not isinstance(doc, list):
+        return ["repos.json must be a list"]
+    errors, names = [], set()
+    for i, entry in enumerate(doc):
+        if not isinstance(entry, dict):
+            errors.append(f"repo entry {i}: must be an object")
+            continue
+        for key in ("name", "url", "commit"):
+            if not non_empty(entry.get(key)):
+                errors.append(f"repo entry {i}: {key} must be a non-empty string")
+        name = entry.get("name")
+        if non_empty(name):
+            if "/" in name or "\\" in name or name.startswith(".") or name != name.strip():
+                errors.append(f"repo entry {i}: name {name!r} is not safe as a single path component")
+            elif name in names:
+                errors.append(f"repo entry {i}: duplicate name {name}")
+            names.add(name)
     return errors
 
 
@@ -87,15 +127,15 @@ def validate_applicability(doc):
             continue
         rule, lang = entry.get("rule"), entry.get("language")
         ok = True
-        if rule not in RULES:
+        if not isinstance(rule, str) or rule not in RULES:
             errors.append(f"applicability entry {i}: unknown rule {rule}")
             ok = False
-        if lang not in LANGUAGES:
+        if not isinstance(lang, str) or lang not in LANGUAGES:
             errors.append(f"applicability entry {i}: unknown language {lang}")
             ok = False
         for key in ("reason", "reviewed_by"):
             value = entry.get(key)
-            if not isinstance(value, str) or not value.strip():
+            if not non_empty(value):
                 errors.append(f"applicability entry {i}: {key} must be a non-empty string")
         if ok:
             if (rule, lang) in pairs:
@@ -211,22 +251,42 @@ def main():
 
     work, corpus = Path(args.work), Path(args.corpus)
     work.mkdir(parents=True, exist_ok=True)
-    per_repo, errors, na_pairs = {}, [], set()
+    errors = []
     try:
         na_errors, na_pairs = validate_applicability(load_json(corpus / "applicability.json"))
         errors += na_errors
-        for repo in load_json(corpus / "repos.json"):
-            doc = load_json(corpus / "labels" / f"{repo['name']}.json")
-            schema = validate_labels(doc)
-            if schema:
+        repos = load_json(corpus / "repos.json")
+        manifest_errors = validate_manifest(repos)
+        errors += manifest_errors
+        docs = {}
+        if not manifest_errors:
+            for repo in repos:
+                path = corpus / "labels" / f"{repo['name']}.json"
+                if not path.is_file():
+                    errors.append(f"{repo['name']}: labels file {path} does not exist")
+                    continue
+                doc = load_json(path)
+                schema = validate_labels(doc)
                 errors += [f"{repo['name']}: {e}" for e in schema]
-                continue
+                if not schema:
+                    docs[repo["name"]] = doc
+    except CorpusError as e:
+        print(f"precision: {e}", file=sys.stderr)
+        sys.exit(1)
+    if errors:
+        for e in errors:
+            print(f"precision: {e}", file=sys.stderr)
+        sys.exit(2)
+
+    per_repo = {}
+    try:
+        for repo in repos:
             out = run([args.stratify, "check", str(checkout(repo, work)), "--format", "json"])
             try:
                 findings = json.loads(out)["findings"]
             except (ValueError, KeyError, TypeError) as e:
                 raise CorpusError(f"{repo['name']}: scan output is not a valid report: {e}")
-            outcomes, errs = classify(findings, doc, repo["name"])
+            outcomes, errs = classify(findings, docs[repo["name"]], repo["name"])
             per_repo[repo["name"]] = outcomes
             errors += errs
     except CorpusError as e:

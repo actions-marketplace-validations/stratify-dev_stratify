@@ -9,7 +9,7 @@ from pathlib import Path
 
 from precision import (
     classify, label_matches, language_of, not_applicable_findings, summarize,
-    validate_applicability, validate_labels,
+    validate_applicability, validate_labels, validate_manifest,
 )
 
 PRECISION = Path(__file__).resolve().parent / "precision.py"
@@ -87,6 +87,85 @@ class SchemaHardening(unittest.TestCase):
 
     def test_non_object_document(self):
         self.assertTrue(validate_labels([]))
+
+
+class StrictLabels(unittest.TestCase):
+    def doc(self, **kw):
+        return {"complete_rules": [], "labels": [{**label("dead_code", "a.rs", 1, "x"), **kw}]}
+
+    def test_valid_label_passes(self):
+        self.assertEqual(validate_labels(self.doc()), [])
+
+    def test_wrong_field_types(self):
+        for key, bad in [("match", 5), ("rule", 5), ("file", ["a"]), ("note", None), ("label", 1), ("match", None)]:
+            errors = validate_labels(self.doc(**{key: bad}))
+            self.assertTrue(any(key in e for e in errors), (key, bad, errors))
+
+    def test_empty_strings(self):
+        for key in ("match", "note", "file"):
+            for bad in ("", "   "):
+                errors = validate_labels(self.doc(**{key: bad}))
+                self.assertTrue(any(key in e and "non-empty" in e for e in errors), (key, bad, errors))
+
+    def test_bad_lines(self):
+        for bad in (True, False, 0, -1, "3", 1.5, None):
+            errors = validate_labels(self.doc(line=bad))
+            self.assertTrue(any("line must be" in e for e in errors), (bad, errors))
+
+    def test_complete_rules_entries(self):
+        for bad in (5, None, ["dead_code"]):
+            errors = validate_labels({"complete_rules": [bad], "labels": []})
+            self.assertTrue(errors, bad)
+        errors = validate_labels({"complete_rules": ["cycle", "cycle"], "labels": []})
+        self.assertTrue(any("duplicate" in e for e in errors), errors)
+
+    def test_non_list_labels_value(self):
+        self.assertTrue(any("labels must be a list" in e for e in validate_labels({"complete_rules": [], "labels": "x"})))
+
+
+class ManifestValidation(unittest.TestCase):
+    def entry(self, **kw):
+        return {"name": "r", "url": "u", "commit": "c", **kw}
+
+    def test_valid(self):
+        self.assertEqual(validate_manifest([self.entry(), self.entry(name="s")]), [])
+
+    def test_not_a_list(self):
+        for bad in ({}, "x", None, 3):
+            self.assertTrue(any("must be a list" in e for e in validate_manifest(bad)), bad)
+
+    def test_entry_not_object(self):
+        errors = validate_manifest(["x", 3, None])
+        self.assertEqual(len([e for e in errors if "must be an object" in e]), 3, errors)
+
+    def test_missing_or_bad_fields(self):
+        for key in ("name", "url", "commit"):
+            for bad in (None, 5, "", "  "):
+                entry = self.entry(**{key: bad})
+                self.assertTrue(any(key in e for e in validate_manifest([entry])), (key, bad))
+            entry = self.entry()
+            del entry[key]
+            self.assertTrue(any(key in e for e in validate_manifest([entry])), key)
+
+    def test_duplicate_names(self):
+        errors = validate_manifest([self.entry(), self.entry()])
+        self.assertTrue(any("duplicate" in e for e in errors), errors)
+
+    def test_unsafe_names(self):
+        for bad in ("a/b", "..", ".hidden", "a\\b", "../x"):
+            errors = validate_manifest([self.entry(name=bad)])
+            self.assertTrue(any("name" in e and "safe" in e for e in errors), (bad, errors))
+
+
+class ApplicabilityStrict(unittest.TestCase):
+    def test_malformed_values(self):
+        base = {"rule": "cycle", "language": "go", "reason": "r", "reviewed_by": "w"}
+        for key in ("rule", "language", "reason", "reviewed_by"):
+            for bad in (None, 5, [], "", "  "):
+                errors, _ = validate_applicability({"not_applicable": [{**base, key: bad}]})
+                self.assertTrue(any(key in e or "unknown" in e for e in errors), (key, bad, errors))
+        errors, _ = validate_applicability({"not_applicable": [{"rule": ["cycle"], "language": {}, "reason": "r", "reviewed_by": "w"}]})
+        self.assertTrue(errors)
 
 
 class Applicability(unittest.TestCase):
@@ -222,14 +301,14 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(proc.returncode, 1)
         self.assertIn("precision:", proc.stderr)
 
-    def test_missing_labels_file_exits_one(self):
+    def test_missing_labels_file_exits_two(self):
         (self.corpus / "labels" / "r.json").unlink()
         proc = self.run_tool(self.fake(json.dumps(FAKE_REPORT)))
-        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(proc.returncode, 2)
         self.assertIn("precision:", proc.stderr)
         self.assertNotIn("Traceback", proc.stderr)
 
-    def test_schema_errors_survive_a_later_clone_failure(self):
+    def test_schema_errors_are_reported_before_any_clone(self):
         (self.corpus / "repos.json").write_text(json.dumps([
             {"name": "r", "url": str(self.source), "commit": self.commit},
             {"name": "s", "url": str(self.dir / "missing"), "commit": self.commit},
@@ -237,8 +316,37 @@ class EndToEnd(unittest.TestCase):
         (self.corpus / "labels" / "r.json").write_text(json.dumps({"complete_rules": [], "labels": ["x"]}))
         (self.corpus / "labels" / "s.json").write_text(json.dumps({"complete_rules": [], "labels": []}))
         proc = self.run_tool(self.fake(json.dumps(FAKE_REPORT)))
-        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(proc.returncode, 2)
         self.assertIn("must be an object", proc.stderr)
+        self.assertFalse((self.dir / "work" / "r").exists())
+
+    def test_integer_match_exits_two_without_traceback(self):
+        self.write_corpus(str(self.source), [{**label("dead_code", "a.rs", 1, "foo"), "match": 5}])
+        proc = self.run_tool(self.fake(json.dumps(FAKE_REPORT)))
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertIn("precision:", proc.stderr)
+        self.assertNotIn("Traceback", proc.stderr)
+
+    def test_malformed_manifest_exits_two_without_traceback(self):
+        (self.corpus / "repos.json").write_text(json.dumps([{"name": "../x", "url": 3}, "x"]))
+        proc = self.run_tool(self.fake(json.dumps(FAKE_REPORT)))
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertIn("precision:", proc.stderr)
+        self.assertNotIn("Traceback", proc.stderr)
+
+    def test_manifest_object_exits_two_without_traceback(self):
+        (self.corpus / "repos.json").write_text("{}")
+        proc = self.run_tool(self.fake(json.dumps(FAKE_REPORT)))
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertNotIn("Traceback", proc.stderr)
+
+    def test_malformed_applicability_exits_two_without_traceback(self):
+        (self.corpus / "applicability.json").write_text(json.dumps({"not_applicable": [
+            {"rule": ["cycle"], "language": 5, "reason": "r", "reviewed_by": "w"}]}))
+        proc = self.run_tool(self.fake(json.dumps(FAKE_REPORT)))
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertIn("precision:", proc.stderr)
+        self.assertNotIn("Traceback", proc.stderr)
 
     def test_not_applicable_pair_with_findings_exits_two(self):
         (self.corpus / "applicability.json").write_text(json.dumps({"not_applicable": [
