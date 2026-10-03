@@ -25,12 +25,12 @@ clones anything. It exits 2 and lists every problem when:
 - a label is malformed, matches no finding (stale), matches several findings
   (ambiguous), or a finding matches several labels
 - a finding of a `complete_rules` rule has no label
-- `repos.json` is malformed, including duplicate or unsafe names
+- `repos.json` is malformed, including duplicate names (compared without regard to case), unsafe names, or a `url` or `commit` that starts with `-`
 - `applicability.json` is malformed
 - a repo has no labels file
 - any of these files is not valid JSON or cannot be read
 
-Exit 1 means only a clone, checkout, or scan failure.
+Exit 1 means only a clone, checkout, or scan failure. That includes scan output with a malformed finding.
 
 ## Rules for labelling
 

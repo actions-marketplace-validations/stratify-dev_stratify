@@ -119,6 +119,8 @@ Phase 1 can be described as implemented after its compatibility, SARIF validity,
 
 ## Resolution
 
+Superseded on 2026-10-03 for the scan-time budget. See Current status.
+
 Date: 2026-10-02. Follow-up work ran on branch `roadmap-qa-fixes`. Phase 0 stays in progress.
 
 ### Findings

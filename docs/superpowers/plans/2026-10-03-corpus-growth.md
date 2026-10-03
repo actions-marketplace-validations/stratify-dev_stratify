@@ -1,7 +1,7 @@
 # Corpus Growth Plan
 
 Date: 2026-10-03
-Closes: gap 5 of [`../2026-10-02-followup-qa-gaps.md`](../2026-10-02-followup-qa-gaps.md)
+Addresses: gap 5 (open until the exit below holds) of [`../2026-10-02-followup-qa-gaps.md`](../2026-10-02-followup-qa-gaps.md)
 Evidence rules: [`../../../corpus/README.md`](../../../corpus/README.md)
 
 This document is a plan only. It clones nothing and labels nothing. It adds no pin. Every pin below reads "to be chosen at labelling time".
@@ -33,7 +33,7 @@ Every pin is "to be chosen at labelling time". Pick a release tag, record its fu
 | Python | django | https://github.com/django/django | Mature code base with many modules and a long history | Cycle candidate: known import cycles resolved by local imports |
 | Python | flask | https://github.com/pallets/flask | Small and idiomatic, so dead code and complexity results are reviewable by hand | Spare for sparse rules |
 | Python | requests | https://github.com/psf/requests | Small library with stable structure | Spare for sparse rules |
-| Go | kubernetes | https://github.com/kubernetes/kubernetes | Already the benchmark repo (v1.31.0, `9edcffc`). Huge, so every rule has volume | Boundary: staging layout and import rules. Cycle: none expected, since Go forbids import cycles |
+| Go | kubernetes | https://github.com/kubernetes/kubernetes | Already the benchmark repo (v1.31.0, `9edcffc`). Huge, so every rule has volume | Boundary: staging layout and import rules. Cycle: likely not-applicable candidate, needs owner review after scans |
 | Go | prometheus | https://github.com/prometheus/prometheus | Mid-size service with clear package boundaries | Boundary candidate |
 | Go | hugo | https://github.com/gohugoio/hugo | Mid-size application with many packages | Boundary candidate |
 | Java | spring-petclinic | https://github.com/spring-projects/spring-petclinic | Small layered Spring app (controller, service, repository) | Boundary: real layered app |
@@ -68,7 +68,7 @@ The estimate counts labelled findings. It assumes about 2 to 5 minutes per findi
 - Per pair: 30 labels minimum. Plan for 40 to 80 in order to leave margin when a repo yields few findings.
 - Per language with six pairs: 240 to 480 labels.
 - Whole corpus of 36 pairs: roughly 1,400 to 2,900 labelled findings, minus any pair the owner approves as not applicable.
-- Time: roughly 70 to 240 hours of labelling and review at the rate above.
+- Time: roughly 47 to 242 hours. That is 1,400 findings at 2 minutes each (about 47 hours) up to 2,900 findings at 5 minutes each (about 242 hours).
 
 Volume rules (`dead_code`, `duplication`, `complexity`, `hotspot`) can produce more than 80 findings in a large repo. Labelling every finding is required for a `complete_rules` entry. If a repo yields thousands of findings of one rule, choose a smaller repo or a smaller pinned snapshot for that rule. Do not label a subset and claim completeness.
 

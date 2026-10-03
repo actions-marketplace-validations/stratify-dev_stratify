@@ -79,8 +79,8 @@ Shipped:
 
   The run used `target/release/stratify` at `90d3a73` against a local clone of this repo, because local `main` is not pushed and the default clone of the corpus URL cannot reach the pinned commit `a809171`. Only Rust `dead_code` has labels: tp 0, fp 15, unlabelled 0, repos 1, coverage 100%, precision 0%, status `insufficient`. Rust `duplication`, `complexity`, `hotspot`, and `cycle` are `incomplete`. The other 31 pairs are `no-data`. The tool measures no pair.
 - The benchmark tool, `scripts/bench.py`, and these release rows in `docs/benchmarks.md`, both at `090da17` on Darwin arm64, Apple M5:
-  - stratify self: 50 files, 11,984 lines, 0.71 s, 36.2 MB peak RSS.
-  - kubernetes v1.31.0 (`9edcffc`): 15,372 files, 4,520,718 lines, 90.27 s, 8,186.5 MB peak RSS. The scan completed.
+  - stratify self: 50 files, 11,984 lines, 0.71 s, 36.2 MiB peak RSS.
+  - kubernetes v1.31.0 (`9edcffc`): 15,372 files, 4,520,718 lines, 90.27 s, 8,186.5 MiB peak RSS. The scan completed.
 - The performance fix (`71b5005`). A profile showed 100% of samples in `deadcode::analyze`. The fix indexes edges by source. The self-scan and 23 fixtures give byte-identical output.
 - Scan statistics describe one population. A file that is not valid UTF-8 is skipped and counted in `files_skipped`, and lines count only for parsed files (`2ac3fef`).
 

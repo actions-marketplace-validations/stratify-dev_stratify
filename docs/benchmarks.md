@@ -5,7 +5,7 @@ Files and lines are what Stratify reports scanning (`--stats`), after
 `.gitignore`, hidden-file skips, and `[ignore]` globs. The roadmap's
 scan-time budget comes from the large-repo row.
 
-| Date | Stratify | Build | Repo | Files | Lines | Wall (s) | Peak RSS (MB) | Machine | Method | Completed |
+| Date | Stratify | Build | Repo | Files | Lines | Wall (s) | Peak RSS (MiB) | Machine | Method | Completed |
 |------|----------|-------|------|-------|-------|----------|---------------|---------|--------|-----------|
 | 2026-10-02 | 090da17 | release | stratify (self) | 50 | 11984 | 0.71 | 36.2 | Darwin arm64, Apple M5 | `scripts/bench.py` | yes |
 | 2026-10-02 | 090da17 | release | kubernetes v1.31.0 (9edcffc) | 15372 | 4520718 | 90.27 | 8186.5 | Darwin arm64, Apple M5 | `scripts/bench.py` | yes |
