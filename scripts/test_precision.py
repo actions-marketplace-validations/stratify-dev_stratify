@@ -151,6 +151,15 @@ class ManifestValidation(unittest.TestCase):
         errors = validate_manifest([self.entry(), self.entry()])
         self.assertTrue(any("duplicate" in e for e in errors), errors)
 
+    def test_case_duplicate_names(self):
+        errors = validate_manifest([self.entry(name="Foo"), self.entry(name="foo")])
+        self.assertTrue(any("duplicate" in e for e in errors), errors)
+
+    def test_dash_leading_url_and_commit(self):
+        for key in ("url", "commit"):
+            errors = validate_manifest([self.entry(**{key: "--upload-pack=x"})])
+            self.assertTrue(any(key in e and "must not start with" in e for e in errors), (key, errors))
+
     def test_unsafe_names(self):
         for bad in ("a/b", "..", ".hidden", "a\\b", "../x"):
             errors = validate_manifest([self.entry(name=bad)])
@@ -373,6 +382,37 @@ class EndToEnd(unittest.TestCase):
             {"rule": "dead_code", "language": "rust", "reason": "r", "reviewed_by": "w"}]}))
         proc = self.run_tool(self.fake(json.dumps(FAKE_REPORT)))
         self.assertEqual(proc.returncode, 2, proc.stderr)
+
+    def test_deeply_nested_json_exits_two(self):
+        (self.corpus / "repos.json").write_text("[" * 1000000 + "]" * 1000000)
+        proc = self.run_tool(self.fake(json.dumps(FAKE_REPORT)))
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertIn("repos.json: cannot read", proc.stderr)
+        self.assertNotIn("Traceback", proc.stderr)
+
+    def test_dash_leading_url_and_commit_exit_two_without_clone(self):
+        for key in ("url", "commit"):
+            with self.subTest(key):
+                entry = {"name": "r", "url": str(self.source), "commit": self.commit, key: "-x"}
+                (self.corpus / "repos.json").write_text(json.dumps([entry]))
+                proc = self.run_tool(self.fake(json.dumps(FAKE_REPORT)))
+                self.assertEqual(proc.returncode, 2, proc.stderr)
+                self.assertNotIn("Traceback", proc.stderr)
+                self.assertFalse((self.dir / "work" / "r").exists())
+
+    def test_case_duplicate_names_exit_two(self):
+        (self.corpus / "repos.json").write_text(json.dumps([
+            {"name": "Foo", "url": str(self.source), "commit": self.commit},
+            {"name": "foo", "url": str(self.source), "commit": self.commit}]))
+        proc = self.run_tool(self.fake(json.dumps(FAKE_REPORT)))
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertIn("duplicate", proc.stderr)
+
+    def test_finding_missing_span_exits_one(self):
+        proc = self.run_tool(self.fake(json.dumps({"findings": [{"rule": "dead_code"}]})))
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertIn("precision:", proc.stderr)
+        self.assertNotIn("Traceback", proc.stderr)
 
     def test_not_applicable_footer(self):
         (self.corpus / "applicability.json").write_text(json.dumps({"not_applicable": [

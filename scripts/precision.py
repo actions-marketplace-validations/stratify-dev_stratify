@@ -10,7 +10,7 @@ language pair is labelled. Precision targets apply only to gate-ready pairs.
 Pairs listed in <corpus>/applicability.json report not-applicable.
 
 Exit codes: 0 valid corpus, 2 invalid corpus input (malformed or unreadable files,
-label errors), 1 clone/checkout/scan failure only. Every input is validated
+label errors), 1 clone/checkout/scan failure only (including malformed scan output). Every input is validated
 before any clone.
 """
 import argparse
@@ -107,13 +107,17 @@ def validate_manifest(doc):
         for key in ("name", "url", "commit"):
             if not non_empty(entry.get(key)):
                 errors.append(f"repo entry {i}: {key} must be a non-empty string")
+        for key in ("url", "commit"):
+            value = entry.get(key)
+            if non_empty(value) and value.startswith("-"):
+                errors.append(f"repo entry {i}: {key} must not start with '-'")
         name = entry.get("name")
         if non_empty(name):
             if "/" in name or "\\" in name or name.startswith(".") or name != name.strip():
                 errors.append(f"repo entry {i}: name {name!r} is not safe as a single path component")
-            elif name in names:
+            elif name.casefold() in names:
                 errors.append(f"repo entry {i}: duplicate name {name}")
-            names.add(name)
+            names.add(name.casefold())
     return errors
 
 
@@ -230,8 +234,8 @@ def run(cmd):
 def checkout(repo, work):
     dest = work / repo["name"]
     if not dest.exists():
-        run(["git", "clone", "--quiet", repo["url"], str(dest)])
-    run(["git", "-C", str(dest), "checkout", "--quiet", repo["commit"]])
+        run(["git", "clone", "--quiet", "--", repo["url"], str(dest)])
+    run(["git", "-C", str(dest), "checkout", "--quiet", repo["commit"], "--"])
     return dest
 
 
@@ -250,7 +254,7 @@ def main():
     def load(path):
         try:
             return json.loads(path.read_text()), True
-        except (OSError, ValueError) as e:
+        except (OSError, ValueError, RecursionError) as e:
             errors.append(f"{path}: cannot read: {e}")
             return None, False
 
@@ -289,7 +293,10 @@ def main():
                 findings = json.loads(out)["findings"]
             except (ValueError, KeyError, TypeError) as e:
                 raise CorpusError(f"{repo['name']}: scan output is not a valid report: {e}")
-            outcomes, errs = classify(findings, docs[repo["name"]], repo["name"])
+            try:
+                outcomes, errs = classify(findings, docs[repo["name"]], repo["name"])
+            except (KeyError, TypeError) as e:
+                raise CorpusError(f"{repo['name']}: scan output has a malformed finding: {e!r}")
             per_repo[repo["name"]] = outcomes
             errors += errs
     except CorpusError as e:
