@@ -319,6 +319,7 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(proc.returncode, 2)
         self.assertIn("must be an object", proc.stderr)
         self.assertFalse((self.dir / "work" / "r").exists())
+        self.assertFalse((self.dir / "work" / "s").exists())
 
     def test_integer_match_exits_two_without_traceback(self):
         self.write_corpus(str(self.source), [{**label("dead_code", "a.rs", 1, "foo"), "match": 5}])
@@ -346,6 +347,25 @@ class EndToEnd(unittest.TestCase):
         proc = self.run_tool(self.fake(json.dumps(FAKE_REPORT)))
         self.assertEqual(proc.returncode, 2, proc.stderr)
         self.assertIn("precision:", proc.stderr)
+        self.assertNotIn("Traceback", proc.stderr)
+
+    def test_invalid_json_in_each_corpus_file_exits_two(self):
+        for rel in ("repos.json", "applicability.json", "labels/r.json"):
+            with self.subTest(rel):
+                self.setUp()
+                (self.corpus / rel).write_text("{not json")
+                proc = self.run_tool(self.fake(json.dumps(FAKE_REPORT)))
+                self.assertEqual(proc.returncode, 2, proc.stderr)
+                self.assertIn(f"{rel}: cannot read", proc.stderr)
+                self.assertNotIn("Traceback", proc.stderr)
+
+    def test_broken_applicability_and_label_error_are_both_reported(self):
+        (self.corpus / "applicability.json").write_text("{not json")
+        self.write_corpus(str(self.source), [{**label("dead_code", "a.rs", 1, "foo"), "match": 5}])
+        proc = self.run_tool(self.fake(json.dumps(FAKE_REPORT)))
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertIn("applicability.json: cannot read", proc.stderr)
+        self.assertIn("match must be a non-empty string", proc.stderr)
         self.assertNotIn("Traceback", proc.stderr)
 
     def test_not_applicable_pair_with_findings_exits_two(self):

@@ -9,8 +9,9 @@ Precision counts labelled findings only; coverage shows how much of a rule and
 language pair is labelled. Precision targets apply only to gate-ready pairs.
 Pairs listed in <corpus>/applicability.json report not-applicable.
 
-Exit codes: 0 valid corpus, 1 clone/checkout/scan failure, 2 invalid corpus input
-or label errors. Every input is validated before any clone.
+Exit codes: 0 valid corpus, 2 invalid corpus input (malformed or unreadable files,
+label errors), 1 clone/checkout/scan failure only. Every input is validated
+before any clone.
 """
 import argparse
 import json
@@ -234,13 +235,6 @@ def checkout(repo, work):
     return dest
 
 
-def load_json(path):
-    try:
-        return json.loads(path.read_text())
-    except (OSError, ValueError) as e:
-        raise CorpusError(f"cannot read {path}: {e}")
-
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--stratify", required=True)
@@ -251,28 +245,37 @@ def main():
 
     work, corpus = Path(args.work), Path(args.corpus)
     work.mkdir(parents=True, exist_ok=True)
-    errors = []
-    try:
-        na_errors, na_pairs = validate_applicability(load_json(corpus / "applicability.json"))
+    errors, na_pairs, docs, repos = [], set(), {}, []
+
+    def load(path):
+        try:
+            return json.loads(path.read_text()), True
+        except (OSError, ValueError) as e:
+            errors.append(f"{path}: cannot read: {e}")
+            return None, False
+
+    doc, ok = load(corpus / "applicability.json")
+    if ok:
+        na_errors, na_pairs = validate_applicability(doc)
         errors += na_errors
-        repos = load_json(corpus / "repos.json")
-        manifest_errors = validate_manifest(repos)
+    manifest, ok = load(corpus / "repos.json")
+    if ok:
+        manifest_errors = validate_manifest(manifest)
         errors += manifest_errors
-        docs = {}
         if not manifest_errors:
+            repos = manifest
             for repo in repos:
                 path = corpus / "labels" / f"{repo['name']}.json"
                 if not path.is_file():
                     errors.append(f"{repo['name']}: labels file {path} does not exist")
                     continue
-                doc = load_json(path)
+                doc, ok = load(path)
+                if not ok:
+                    continue
                 schema = validate_labels(doc)
                 errors += [f"{repo['name']}: {e}" for e in schema]
                 if not schema:
                     docs[repo["name"]] = doc
-    except CorpusError as e:
-        print(f"precision: {e}", file=sys.stderr)
-        sys.exit(1)
     if errors:
         for e in errors:
             print(f"precision: {e}", file=sys.stderr)

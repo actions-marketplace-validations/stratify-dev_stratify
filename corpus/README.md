@@ -19,10 +19,18 @@ one row per rule and language.
 ## Matching and validation
 
 A label matches a finding when rule, file, and line are equal and `match`
-is a substring of the message. The script exits 2 and lists every problem
-when a label is malformed, matches no finding (stale), matches several
-findings (ambiguous), when a finding matches several labels, or when a
-finding of a `complete_rules` rule has no label.
+is a substring of the message. The script validates every input before it
+clones anything. It exits 2 and lists every problem when:
+
+- a label is malformed, matches no finding (stale), matches several findings
+  (ambiguous), or a finding matches several labels
+- a finding of a `complete_rules` rule has no label
+- `repos.json` is malformed, including duplicate or unsafe names
+- `applicability.json` is malformed
+- a repo has no labels file
+- any of these files is not valid JSON or cannot be read
+
+Exit 1 means only a clone, checkout, or scan failure.
 
 ## Rules for labelling
 
