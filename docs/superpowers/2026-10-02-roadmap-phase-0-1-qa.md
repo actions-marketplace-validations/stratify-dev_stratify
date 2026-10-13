@@ -9,8 +9,8 @@ Roadmap: [`../roadmap-full-stack-static-analysis.md`](../roadmap-full-stack-stat
 - The large-repo benchmark and the performance fix are complete. Kubernetes v1.31.0 scans in 90.27 s at 8,186.5 MiB peak RSS (`090da17`).
 - The scan-time budget is set: at most 180 s wall and at most 16 GiB peak RSS. The reference run meets it.
 - Precision is still open. 0 of 36 pairs are gate-ready.
-- Hosted CI is pending. Local `main` tracks `origin/main` and is ahead of it. The commits are not pushed, so no CI run exists.
-- Phase 0 stays in progress. Phase 1 is implemented and verified locally, not by hosted CI.
+- Hosted CI passed on `efd5825` after `main` was pushed on 2026-10-13 ([CI run 38333709972](https://github.com/stratify-dev/stratify/actions/runs/38333709972)). Every configured check ran, including SARIF schema validation and the script tests.
+- Phase 0 stays in progress. Phase 1 is implemented and verified by hosted CI.
 
 The sections below up to the Resolution record the initial review of 2026-10-02. Read them as that snapshot.
 
@@ -134,7 +134,7 @@ Date: 2026-10-02. Follow-up work ran on branch `roadmap-qa-fixes`. Phase 0 stays
 ### Requirements to complete Phase 0
 
 - [x] Set the corpus acceptance policy. `5c21b48`, `docs/roadmap-full-stack-static-analysis.md`.
-- [ ] Grow and pin the corpus. Open: only this repo is in the corpus, and `main` is not pushed, so the pin `a809171` is unreachable from the default clone URL.
+- [ ] Grow and pin the corpus. Open: only this repo is in the corpus, so the precision gate cannot pass yet. Since the 2026-10-13 push, the pin `a809171` is reachable from the default clone URL.
 - [ ] Label findings completely for any claimed precision. Open: Rust `dead_code` has labels but one repo. Rust `duplication`, `complexity`, `hotspot`, and `cycle` are `incomplete`. 31 pairs are `no-data`, and 4 more are `incomplete` with no labels, so 35 of 36 pairs have no labels.
 - [x] Validate the precision tool end to end. `5c21b48`. Exit codes are 0 for a clean run, 2 for label or validation errors, and 1 for clone, checkout, or scan failures.
 - [x] Report coverage with precision. `5c21b48`. The tool prints counts, repos, coverage, precision, and status per pair, plus a gate-ready footer.
@@ -154,14 +154,14 @@ Date: 2026-10-02. Follow-up work ran on branch `roadmap-qa-fixes`. Phase 0 stays
 - [x] Rule registry. Shipped in `98728e8`, unchanged this round.
 - [x] Evidence model. Shipped in `5483695`, unchanged this round.
 - [x] Evidence usefulness. Shipped in `5483695`, unchanged this round.
-- [ ] SARIF output. `3f02fcf` validates generated SARIF against the OASIS 2.1.0 schema (draft-04). The CI step is configured and the local run passes. Open: CI run pending (branch not pushed).
+- [x] SARIF output. `3f02fcf` validates generated SARIF against the OASIS 2.1.0 schema (draft-04). Hosted CI validated 6 fixtures on `efd5825` ([CI run 38333709972](https://github.com/stratify-dev/stratify/actions/runs/38333709972)).
 - [x] Suppression semantics. `e3b033b` and `62b8b87`. `39c2e10` adds a stderr warning for unknown rule ids.
 - [x] Baseline behavior. Shipped in `7d3dfa8`, unchanged this round.
-- [ ] GitHub Action. Shipped earlier, unchanged this round. The script-test CI step is configured and the local run passes. Open: CI run pending (branch not pushed).
+- [x] GitHub Action. Shipped earlier, unchanged this round. Hosted CI ran the script tests on `efd5825` ([CI run 38333709972](https://github.com/stratify-dev/stratify/actions/runs/38333709972)), 66 run, 0 skipped.
 - [x] Judge compatibility. `c6aea0b`, `197d25e`, `90d3a73`, `docs/judge-compat.md`. Passes by code inspection and request capture. The code never reads the evidence fields and 32 request bodies per variant matched. Three live runs show only model noise (run 3 had 2 changed rows), and all three exited 1 under the script's own criterion.
 - [x] Documentation and release notes. `CHANGELOG.md` Unreleased covers the performance fix, the skip behavior, and the unknown-id warning. The roadmap carries status.
 - [x] Repository workflow. Resolved by the finding 3 note.
 
 ### Sign-off
 
-Phase 1 is implemented and verified locally. Its sign-off is open: the CI run is pending until the branch is pushed, so no green CI run exists. Phase 0 is not signed off. The large-repo benchmark is done. The precision gate is not.
+Phase 1 is implemented, and hosted CI passed on `efd5825` ([CI run 38333709972](https://github.com/stratify-dev/stratify/actions/runs/38333709972)). That meets this review's Phase 1 sign-off condition. Phase 0 is not signed off. The large-repo benchmark is done. The precision gate is not.
