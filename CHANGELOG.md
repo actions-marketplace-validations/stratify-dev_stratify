@@ -7,7 +7,7 @@ and versioning follows [Semantic Versioning](https://semver.org/) (pre-1.0,
 so a minor bump can still carry a behavior change; patch bumps stay
 backward-compatible).
 
-## [Unreleased]
+## [0.7.0] - 2026-10-12
 
 ### Added
 - `stratify check` warns on stderr when a `stratify-ignore` marker names an
@@ -51,8 +51,9 @@ backward-compatible).
 - Dead-code analysis indexes call edges by source, so large repositories
   finish. A scan of Kubernetes v1.31.0 (15,372 files, 4.5 million lines) now
   completes in 90.27 s. Output is unchanged.
-- A source file that is not valid UTF-8 is skipped and counted in the new
-  `files_skipped` stat instead of aborting the scan. `lines_scanned` now
+- A source file that cannot be read, including one that is not valid UTF-8,
+  is skipped and counted in the new `files_skipped` stat instead of aborting
+  the scan. `lines_scanned` now
   counts only files that parsed, so it matches `files_scanned`.
 - The GitHub Action passes its inputs as environment variables instead of
   interpolating them into the shell script, so a path with spaces or shell
