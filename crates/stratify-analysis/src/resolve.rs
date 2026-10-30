@@ -158,6 +158,288 @@ pub fn go_imports(graph: &mut IrGraph) {
     }
 }
 
+/// One Cargo package: its crate name as `use` paths spell it (hyphens become
+/// underscores) and its `src` directory relative to the scan root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RustCrate {
+    pub name: String,
+    pub src_dir: String,
+}
+
+/// Resolve Rust imports: rewrite each Dependency reached by an `Imports` edge
+/// from a `.rs` file so its name becomes the `.rs` file of the module the
+/// path names. `crate::`, `self::`, `super::`, and paths starting with a
+/// scanned crate's name resolve. Anything else (std, external crates) keeps
+/// its raw path and forms no edge. The longest path prefix that names an
+/// existing module file wins, so `crate::a::Item` lands on `src/a.rs`.
+pub fn rust_imports(graph: &mut IrGraph, crates: &[RustCrate]) {
+    let files: std::collections::HashSet<String> = graph
+        .symbols()
+        .iter()
+        .filter(|s| matches!(s.kind, SymbolKind::File) && s.span.file.ends_with(".rs"))
+        .map(|s| s.span.file.clone())
+        .collect();
+    if files.is_empty() {
+        return;
+    }
+    // Crate source roots: Cargo packages, plus any directory holding a
+    // `lib.rs` or `main.rs` (covers scans with no Cargo.toml).
+    let mut roots: Vec<String> = crates.iter().map(|c| c.src_dir.clone()).collect();
+    for f in &files {
+        let name = file_name(f);
+        if name == "lib.rs" || name == "main.rs" {
+            roots.push(parent_dir(f).unwrap_or_default());
+        }
+    }
+    roots.sort();
+    roots.dedup();
+
+    // Phase 1: resolve every raw `use` path, keeping the leftover item segments.
+    let mut entries: Vec<ImportEntry> = Vec::new();
+    for (index, r) in graph.references().iter().enumerate() {
+        if !matches!(r.kind, RefKind::Imports) {
+            continue;
+        }
+        let (Some(from), Some(to)) = (graph.symbol(r.from), graph.symbol(r.to)) else {
+            continue;
+        };
+        if !from.span.file.ends_with(".rs") {
+            continue;
+        }
+        let resolved = resolve_rust_path(&from.span.file, &to.name, &files, &roots, crates);
+        entries.push(ImportEntry {
+            index,
+            dep: to.id,
+            src_file: from.span.file.clone(),
+            raw: to.name.clone(),
+            target: resolved.as_ref().map(|r| r.file.clone()),
+            leftover: resolved.map(|r| r.leftover).unwrap_or_default(),
+        });
+    }
+
+    // Names defined in each file, to tell a module file that defines the item
+    // from a facade that may only re-export it.
+    let mut defined: std::collections::HashSet<(&str, &str)> = std::collections::HashSet::new();
+    for s in graph.symbols() {
+        if matches!(
+            s.kind,
+            SymbolKind::Function | SymbolKind::Class | SymbolKind::Constant | SymbolKind::Module
+        ) {
+            defined.insert((s.span.file.as_str(), s.name.as_str()));
+        }
+    }
+
+    // Phase 2: follow explicit item re-exports, up to MAX_REEXPORT_HOPS.
+    let mut by_file: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (i, e) in entries.iter().enumerate() {
+        by_file.entry(e.src_file.as_str()).or_default().push(i);
+    }
+    let mut renames: Vec<(SymbolId, String)> = Vec::new();
+    let mut unconfirmed: Vec<usize> = Vec::new();
+    for e in &entries {
+        let Some(mut target) = e.target.clone() else {
+            continue;
+        };
+        let mut leftover = e.leftover.clone();
+        let mut visited = vec![target.clone()];
+        for _ in 0..MAX_REEXPORT_HOPS {
+            let Some(item) = leftover.first() else {
+                break;
+            };
+            let hop = by_file.get(target.as_str()).and_then(|ids| {
+                ids.iter()
+                    .map(|&i| &entries[i])
+                    .find(|x| x.raw.rsplit("::").next() == Some(item.as_str()))
+            });
+            let Some(next_target) = hop.and_then(|x| x.target.clone()) else {
+                break;
+            };
+            if visited.contains(&next_target) {
+                break;
+            }
+            leftover = hop.map(|x| x.leftover.clone()).unwrap_or_default();
+            visited.push(next_target.clone());
+            target = next_target;
+        }
+        if let Some(item) = leftover.first() {
+            if !defined.contains(&(target.as_str(), item.as_str())) {
+                unconfirmed.push(e.index);
+            }
+        }
+        if target != e.raw {
+            renames.push((e.dep, target));
+        }
+    }
+    for (id, name) in renames {
+        graph.set_symbol_name(id, name);
+    }
+    for index in unconfirmed {
+        graph.set_reference_confidence(index, Confidence::Likely);
+    }
+}
+
+/// How many re-export hops `rust_imports` follows before giving up.
+const MAX_REEXPORT_HOPS: usize = 8;
+
+/// One `Imports` edge from a `.rs` file, as resolved in phase 1.
+struct ImportEntry {
+    /// Index of the `Imports` reference in the graph.
+    index: usize,
+    /// The Dependency symbol the reference points at.
+    dep: SymbolId,
+    src_file: String,
+    /// The raw `use` path, before any rename.
+    raw: String,
+    target: Option<String>,
+    leftover: Vec<String>,
+}
+
+fn file_name(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+/// Parent directory of a `/`-separated path. `"a.rs"` gives `Some("")`,
+/// `""` gives `None`.
+fn parent_dir(path: &str) -> Option<String> {
+    if path.is_empty() {
+        return None;
+    }
+    Some(match path.rfind('/') {
+        Some(i) => path[..i].to_string(),
+        None => String::new(),
+    })
+}
+
+fn join_dir(base: &str, rel: &str) -> String {
+    if base.is_empty() {
+        rel.to_string()
+    } else {
+        format!("{base}/{rel}")
+    }
+}
+
+/// Directory holding this file's child modules: `src/a.rs` -> `src/a`,
+/// `src/a/mod.rs` or `src/lib.rs` -> its own directory.
+fn children_dir(file: &str) -> String {
+    match file_name(file) {
+        "lib.rs" | "main.rs" | "mod.rs" => parent_dir(file).unwrap_or_default(),
+        _ => file.trim_end_matches(".rs").to_string(),
+    }
+}
+
+/// The crate root directory containing `file`: the longest root that prefixes it.
+fn crate_root_of(file: &str, roots: &[String]) -> Option<String> {
+    roots
+        .iter()
+        .filter(|r| r.is_empty() || file.starts_with(&format!("{r}/")))
+        .max_by_key(|r| r.len())
+        .cloned()
+}
+
+/// The file defining the module whose children live in `dir`.
+fn module_file(
+    dir: &str,
+    files: &std::collections::HashSet<String>,
+    roots: &[String],
+) -> Option<String> {
+    let mut candidates = Vec::new();
+    if roots.iter().any(|r| r == dir) {
+        candidates.push(join_dir(dir, "lib.rs"));
+        candidates.push(join_dir(dir, "main.rs"));
+    }
+    if !dir.is_empty() {
+        candidates.push(format!("{dir}.rs"));
+        candidates.push(join_dir(dir, "mod.rs"));
+    }
+    candidates.into_iter().find(|c| files.contains(c))
+}
+
+/// Longest prefix of `segs` naming a module file under `base`, with the number
+/// of segments that prefix used. With `fallback_to_base`, an empty match lands
+/// on `base`'s own module file and uses none.
+fn longest_module(
+    base: &str,
+    segs: &[&str],
+    files: &std::collections::HashSet<String>,
+    roots: &[String],
+    fallback_to_base: bool,
+) -> Option<(String, usize)> {
+    for k in (1..=segs.len()).rev() {
+        let stem = join_dir(base, &segs[..k].join("/"));
+        for cand in [format!("{stem}.rs"), format!("{stem}/mod.rs")] {
+            if files.contains(&cand) {
+                return Some((cand, k));
+            }
+        }
+    }
+    if fallback_to_base {
+        module_file(base, files, roots).map(|f| (f, 0))
+    } else {
+        None
+    }
+}
+
+/// A resolved `use` path: the module file it lands on, plus the item segments
+/// left over after the longest module-file prefix.
+struct Resolved {
+    file: String,
+    leftover: Vec<String>,
+}
+
+fn resolve_rust_path(
+    file: &str,
+    path: &str,
+    files: &std::collections::HashSet<String>,
+    roots: &[String],
+    crates: &[RustCrate],
+) -> Option<Resolved> {
+    let segs: Vec<&str> = path.split("::").filter(|s| !s.is_empty()).collect();
+    let first = *segs.first()?;
+    let (rest, found) = match first {
+        "crate" => {
+            let base = crate_root_of(file, roots)?;
+            (
+                &segs[1..],
+                longest_module(&base, &segs[1..], files, roots, true),
+            )
+        }
+        "self" => (
+            &segs[1..],
+            longest_module(&children_dir(file), &segs[1..], files, roots, true),
+        ),
+        "super" => {
+            let n = segs.iter().take_while(|s| **s == "super").count();
+            let mut dir = children_dir(file);
+            for _ in 0..n {
+                dir = parent_dir(&dir)?;
+            }
+            (
+                &segs[n..],
+                longest_module(&dir, &segs[n..], files, roots, true),
+            )
+        }
+        name => {
+            if let Some(c) = crates.iter().find(|c| c.name == name) {
+                (
+                    &segs[1..],
+                    longest_module(&c.src_dir, &segs[1..], files, roots, true),
+                )
+            } else {
+                // 2018-edition path to a child module of this file.
+                (
+                    &segs[..],
+                    longest_module(&children_dir(file), &segs, files, roots, false),
+                )
+            }
+        }
+    };
+    let (target, used) = found?;
+    Some(Resolved {
+        file: target,
+        leftover: rest[used..].iter().map(|s| s.to_string()).collect(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,5 +606,224 @@ mod tests {
         add_ref(&mut g, a_file, dep, RefKind::Imports, "a/a.go");
         go_imports(&mut g);
         assert_eq!(g.symbol(dep).unwrap().name, "fmt"); // no matching package dir -> unchanged
+    }
+
+    fn rust_file(g: &mut IrGraph, path: &str) -> SymbolId {
+        crate::test_support::add_sym(g, SymbolKind::File, path, path, path)
+    }
+
+    fn rust_import(g: &mut IrGraph, from: SymbolId, from_file: &str, raw: &str) -> SymbolId {
+        let dep = crate::test_support::add_sym(g, SymbolKind::Dependency, raw, raw, from_file);
+        crate::test_support::add_ref(g, from, dep, RefKind::Imports, from_file);
+        dep
+    }
+
+    fn krate(name: &str, src_dir: &str) -> RustCrate {
+        RustCrate {
+            name: name.into(),
+            src_dir: src_dir.into(),
+        }
+    }
+
+    #[test]
+    fn rust_crate_path_resolves_to_module_file() {
+        let mut g = IrGraph::new();
+        rust_file(&mut g, "src/lib.rs");
+        let a = rust_file(&mut g, "src/a.rs");
+        rust_file(&mut g, "src/b.rs");
+        let dep = rust_import(&mut g, a, "src/a.rs", "crate::b::Thing");
+        rust_imports(&mut g, &[krate("demo", "src")]);
+        assert_eq!(g.symbol(dep).unwrap().name, "src/b.rs");
+    }
+
+    #[test]
+    fn rust_mod_rs_and_nested_paths_resolve() {
+        let mut g = IrGraph::new();
+        rust_file(&mut g, "src/lib.rs");
+        let d = rust_file(&mut g, "src/domain/mod.rs");
+        rust_file(&mut g, "src/api/mod.rs");
+        rust_file(&mut g, "src/api/routes.rs");
+        let d1 = rust_import(&mut g, d, "src/domain/mod.rs", "crate::api::handler");
+        let d2 = rust_import(&mut g, d, "src/domain/mod.rs", "crate::api::routes::list");
+        rust_imports(&mut g, &[krate("demo", "src")]);
+        assert_eq!(g.symbol(d1).unwrap().name, "src/api/mod.rs");
+        assert_eq!(g.symbol(d2).unwrap().name, "src/api/routes.rs");
+    }
+
+    #[test]
+    fn rust_item_defined_in_crate_root_resolves_to_lib_rs() {
+        let mut g = IrGraph::new();
+        rust_file(&mut g, "src/lib.rs");
+        let a = rust_file(&mut g, "src/a.rs");
+        let dep = rust_import(&mut g, a, "src/a.rs", "crate::Config");
+        rust_imports(&mut g, &[krate("demo", "src")]);
+        assert_eq!(g.symbol(dep).unwrap().name, "src/lib.rs");
+    }
+
+    #[test]
+    fn rust_super_and_self_paths_resolve() {
+        let mut g = IrGraph::new();
+        rust_file(&mut g, "src/lib.rs");
+        rust_file(&mut g, "src/a.rs");
+        let b = rust_file(&mut g, "src/a/b.rs");
+        rust_file(&mut g, "src/a/b/c.rs");
+        rust_file(&mut g, "src/a/sibling.rs");
+        let up = rust_import(&mut g, b, "src/a/b.rs", "super::sibling::f");
+        let up_self = rust_import(&mut g, b, "src/a/b.rs", "super::Item");
+        let down = rust_import(&mut g, b, "src/a/b.rs", "self::c::g");
+        rust_imports(&mut g, &[krate("demo", "src")]);
+        assert_eq!(g.symbol(up).unwrap().name, "src/a/sibling.rs");
+        assert_eq!(g.symbol(up_self).unwrap().name, "src/a.rs");
+        assert_eq!(g.symbol(down).unwrap().name, "src/a/b/c.rs");
+    }
+
+    #[test]
+    fn rust_cross_crate_path_resolves_through_crate_map() {
+        let mut g = IrGraph::new();
+        rust_file(&mut g, "crates/core/src/lib.rs");
+        rust_file(&mut g, "crates/core/src/ir.rs");
+        let cli = rust_file(&mut g, "crates/cli/src/main.rs");
+        let dep = rust_import(&mut g, cli, "crates/cli/src/main.rs", "my_core::ir::Span");
+        rust_imports(
+            &mut g,
+            &[
+                krate("my_core", "crates/core/src"),
+                krate("cli", "crates/cli/src"),
+            ],
+        );
+        assert_eq!(g.symbol(dep).unwrap().name, "crates/core/src/ir.rs");
+    }
+
+    #[test]
+    fn rust_external_crates_stay_unresolved() {
+        let mut g = IrGraph::new();
+        rust_file(&mut g, "src/lib.rs");
+        let a = rust_file(&mut g, "src/a.rs");
+        let std_dep = rust_import(&mut g, a, "src/a.rs", "std::collections::HashMap");
+        let serde_dep = rust_import(&mut g, a, "src/a.rs", "serde::Serialize");
+        rust_imports(&mut g, &[krate("demo", "src")]);
+        assert_eq!(g.symbol(std_dep).unwrap().name, "std::collections::HashMap");
+        assert_eq!(g.symbol(serde_dep).unwrap().name, "serde::Serialize");
+    }
+
+    #[test]
+    fn rust_crate_root_without_cargo_map_uses_lib_rs_dir() {
+        let mut g = IrGraph::new();
+        rust_file(&mut g, "lib.rs");
+        let a = rust_file(&mut g, "a.rs");
+        rust_file(&mut g, "b.rs");
+        let dep = rust_import(&mut g, a, "a.rs", "crate::b::f");
+        rust_imports(&mut g, &[]);
+        assert_eq!(g.symbol(dep).unwrap().name, "b.rs");
+    }
+
+    #[test]
+    fn rust_imports_ignore_non_rust_files() {
+        let mut g = IrGraph::new();
+        let a = crate::test_support::add_sym(&mut g, SymbolKind::File, "a/a.go", "a", "a/a.go");
+        let dep = rust_import(&mut g, a, "a/a.go", "crate::b");
+        rust_imports(&mut g, &[]);
+        assert_eq!(g.symbol(dep).unwrap().name, "crate::b");
+    }
+
+    fn import_confidence(g: &IrGraph, dep: SymbolId) -> Confidence {
+        g.references()
+            .iter()
+            .find(|r| matches!(r.kind, RefKind::Imports) && r.to == dep)
+            .map(|r| r.confidence)
+            .unwrap()
+    }
+
+    #[test]
+    fn rust_reexport_in_crate_root_is_followed() {
+        let mut g = IrGraph::new();
+        let lib = rust_file(&mut g, "src/lib.rs");
+        let a = rust_file(&mut g, "src/a.rs");
+        rust_file(&mut g, "src/b.rs");
+        crate::test_support::add_sym(&mut g, SymbolKind::Class, "Thing", "Thing", "src/b.rs");
+        rust_import(&mut g, lib, "src/lib.rs", "b::Thing");
+        let dep = rust_import(&mut g, a, "src/a.rs", "crate::Thing");
+        rust_imports(&mut g, &[krate("demo", "src")]);
+        assert_eq!(g.symbol(dep).unwrap().name, "src/b.rs");
+        assert_eq!(import_confidence(&g, dep), Confidence::Certain);
+    }
+
+    #[test]
+    fn rust_reexport_in_mod_rs_is_followed() {
+        let mut g = IrGraph::new();
+        rust_file(&mut g, "src/lib.rs");
+        let m = rust_file(&mut g, "src/builder/mod.rs");
+        let action = rust_file(&mut g, "src/builder/action.rs");
+        rust_file(&mut g, "src/builder/range.rs");
+        rust_import(&mut g, m, "src/builder/mod.rs", "range::ValueRange");
+        let dep = rust_import(
+            &mut g,
+            action,
+            "src/builder/action.rs",
+            "crate::builder::ValueRange",
+        );
+        rust_imports(&mut g, &[krate("demo", "src")]);
+        assert_eq!(g.symbol(dep).unwrap().name, "src/builder/range.rs");
+    }
+
+    #[test]
+    fn rust_glob_only_facade_keeps_target_and_is_likely() {
+        let mut g = IrGraph::new();
+        rust_file(&mut g, "src/lib.rs");
+        let m = rust_file(&mut g, "src/builder/mod.rs");
+        let action = rust_file(&mut g, "src/builder/action.rs");
+        rust_file(&mut g, "src/builder/range.rs");
+        // `pub use range::*;` is recorded as the bare module path.
+        rust_import(&mut g, m, "src/builder/mod.rs", "range");
+        let dep = rust_import(
+            &mut g,
+            action,
+            "src/builder/action.rs",
+            "crate::builder::ValueRange",
+        );
+        rust_imports(&mut g, &[krate("demo", "src")]);
+        assert_eq!(g.symbol(dep).unwrap().name, "src/builder/mod.rs");
+        assert_eq!(import_confidence(&g, dep), Confidence::Likely);
+    }
+
+    #[test]
+    fn rust_item_defined_in_target_stays_certain() {
+        let mut g = IrGraph::new();
+        rust_file(&mut g, "src/lib.rs");
+        let a = rust_file(&mut g, "src/a.rs");
+        rust_file(&mut g, "src/b.rs");
+        crate::test_support::add_sym(&mut g, SymbolKind::Function, "Thing", "Thing", "src/b.rs");
+        let dep = rust_import(&mut g, a, "src/a.rs", "crate::b::Thing");
+        rust_imports(&mut g, &[krate("demo", "src")]);
+        assert_eq!(g.symbol(dep).unwrap().name, "src/b.rs");
+        assert_eq!(import_confidence(&g, dep), Confidence::Certain);
+    }
+
+    #[test]
+    fn rust_two_hop_reexport_chain_is_followed() {
+        let mut g = IrGraph::new();
+        let lib = rust_file(&mut g, "src/lib.rs");
+        let a = rust_file(&mut g, "src/a.rs");
+        let m = rust_file(&mut g, "src/m/mod.rs");
+        rust_file(&mut g, "src/m/deep.rs");
+        rust_import(&mut g, lib, "src/lib.rs", "m::Thing");
+        rust_import(&mut g, m, "src/m/mod.rs", "deep::Thing");
+        let dep = rust_import(&mut g, a, "src/a.rs", "crate::Thing");
+        rust_imports(&mut g, &[krate("demo", "src")]);
+        assert_eq!(g.symbol(dep).unwrap().name, "src/m/deep.rs");
+    }
+
+    #[test]
+    fn rust_reexport_loop_terminates() {
+        let mut g = IrGraph::new();
+        let lib = rust_file(&mut g, "src/lib.rs");
+        let a = rust_file(&mut g, "src/a.rs");
+        let x = rust_file(&mut g, "src/x.rs");
+        rust_import(&mut g, lib, "src/lib.rs", "a::Thing");
+        rust_import(&mut g, a, "src/a.rs", "crate::Thing");
+        let dep = rust_import(&mut g, x, "src/x.rs", "crate::Thing");
+        rust_imports(&mut g, &[krate("demo", "src")]);
+        let name = g.symbol(dep).unwrap().name.clone();
+        assert!(name == "src/a.rs" || name == "src/lib.rs", "{name}");
     }
 }

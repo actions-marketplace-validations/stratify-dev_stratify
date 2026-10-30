@@ -1,3 +1,4 @@
+mod baseline;
 mod churn;
 mod gitmeta;
 mod lsp;
@@ -36,6 +37,15 @@ enum Command {
         /// Project name (service.name). Overrides OTEL_SERVICE_NAME.
         #[arg(long)]
         project: Option<String>,
+        /// Report and gate only findings absent from this baseline file.
+        #[arg(long, conflicts_with = "write_baseline")]
+        baseline: Option<PathBuf>,
+        /// Write every current finding to this baseline file and exit 0.
+        #[arg(long)]
+        write_baseline: Option<PathBuf>,
+        /// Print scan statistics as one JSON line on stderr, prefixed `stratify-stats `.
+        #[arg(long = "stats")]
+        print_stats: bool,
     },
     /// Run an MCP server over stdio for coding agents.
     Mcp,
@@ -88,12 +98,72 @@ fn main() -> ExitCode {
             fail_on,
             otlp_endpoint,
             project,
+            baseline,
+            write_baseline,
+            print_stats,
         } => {
             let (report, stats) = match run::analyze_repo_with_stats(&path) {
                 Ok(r) => r,
                 Err(e) => {
                     eprintln!("stratify: {e}");
                     return ExitCode::FAILURE;
+                }
+            };
+
+            for (file, line, id) in &stats.unknown_suppression_rules {
+                eprintln!(
+                    "warning: {file}:{line}: unknown rule id `{id}` in stratify-ignore marker"
+                );
+            }
+
+            if print_stats {
+                eprintln!(
+                    "stratify-stats {}",
+                    serde_json::json!({
+                        "files_scanned": stats.files_scanned,
+                        "lines_scanned": stats.lines_scanned,
+                        "files_skipped": stats.files_skipped,
+                        "functions": stats.functions,
+                        "languages": stats.languages,
+                        "duration_ms": stats.duration_ms,
+                    })
+                );
+            }
+
+            if let Some(out) = &write_baseline {
+                if let Err(e) = std::fs::write(out, baseline::write(&report)) {
+                    eprintln!("stratify: baseline {}: {e}", out.display());
+                    return ExitCode::from(2);
+                }
+                eprintln!(
+                    "stratify: wrote {} finding(s) to {}",
+                    report.findings.len(),
+                    out.display()
+                );
+                return ExitCode::SUCCESS;
+            }
+            let report = match &baseline {
+                None => report,
+                Some(p) => {
+                    let text = match std::fs::read_to_string(p) {
+                        Ok(t) => t,
+                        Err(e) => {
+                            eprintln!("stratify: baseline {}: {e}", p.display());
+                            return ExitCode::from(2);
+                        }
+                    };
+                    match baseline::filter_new(report, &text) {
+                        Ok((r, hidden)) => {
+                            if hidden > 0 {
+                                eprintln!("stratify: {hidden} baselined finding(s) hidden");
+                            }
+                            r
+                        }
+                        Err(e) => {
+                            eprintln!("stratify: baseline {}: {e}", p.display());
+                            return ExitCode::from(2);
+                        }
+                    }
                 }
             };
 

@@ -1,0 +1,128 @@
+{
+  "repo": "stratify",
+  "complete_rules": [
+    "dead_code"
+  ],
+  "labels": [
+    {
+      "rule": "dead_code",
+      "file": "crates/stratify-report/src/lib.rs",
+      "line": 11,
+      "match": "sample_finding",
+      "label": "fp",
+      "note": "test-only helper under #[cfg(test)], called from crates/stratify-report/src/json.rs:15"
+    },
+    {
+      "rule": "dead_code",
+      "file": "crates/stratify-core/src/graph.rs",
+      "line": 93,
+      "match": "complexities",
+      "label": "fp",
+      "note": "called from crates/stratify-cli/src/run.rs:72"
+    },
+    {
+      "rule": "dead_code",
+      "file": "crates/stratify-analysis/src/imports.rs",
+      "line": 10,
+      "match": "file_import_graph",
+      "label": "fp",
+      "note": "called from crates/stratify-analysis/src/boundaries.rs:155"
+    },
+    {
+      "rule": "dead_code",
+      "file": "crates/stratify-analysis/src/imports.rs",
+      "line": 50,
+      "match": "file_spans",
+      "label": "fp",
+      "note": "called from crates/stratify-analysis/src/boundaries.rs:156"
+    },
+    {
+      "rule": "dead_code",
+      "file": "crates/stratify-analysis/src/imports.rs",
+      "line": 131,
+      "match": "fqn_spans",
+      "label": "fp",
+      "note": "called from crates/stratify-analysis/src/cycles.rs:11"
+    },
+    {
+      "rule": "dead_code",
+      "file": "crates/stratify-analysis/src/lib.rs",
+      "line": 17,
+      "match": "`span`",
+      "label": "fp",
+      "note": "test-only helper under #[cfg(test)], called from crates/stratify-analysis/src/lib.rs:40"
+    },
+    {
+      "rule": "dead_code",
+      "file": "crates/stratify-analysis/src/lib.rs",
+      "line": 28,
+      "match": "add_sym",
+      "label": "fp",
+      "note": "test-only helper under #[cfg(test)], called from crates/stratify-analysis/src/resolve.rs:304"
+    },
+    {
+      "rule": "dead_code",
+      "file": "crates/stratify-analysis/src/lib.rs",
+      "line": 47,
+      "match": "add_ref",
+      "label": "fp",
+      "note": "test-only helper under #[cfg(test)], called from crates/stratify-analysis/src/resolve.rs:313"
+    },
+    {
+      "rule": "dead_code",
+      "file": "crates/stratify-analysis/src/lib.rs",
+      "line": 64,
+      "match": "file_sym",
+      "label": "fp",
+      "note": "test-only helper under #[cfg(test)], called from crates/stratify-analysis/src/imports.rs:155"
+    },
+    {
+      "rule": "dead_code",
+      "file": "crates/stratify-analysis/src/lib.rs",
+      "line": 69,
+      "match": "add_import",
+      "label": "fp",
+      "note": "test-only helper under #[cfg(test)], called from crates/stratify-analysis/src/imports.rs:171"
+    },
+    {
+      "rule": "dead_code",
+      "file": "crates/stratify-cli/src/lsp.rs",
+      "line": 188,
+      "match": "run_stdio",
+      "label": "fp",
+      "note": "called from crates/stratify-cli/src/main.rs:124"
+    },
+    {
+      "rule": "dead_code",
+      "file": "crates/stratify-cli/src/mcp.rs",
+      "line": 134,
+      "match": "run_stdio",
+      "label": "fp",
+      "note": "called from crates/stratify-cli/src/main.rs:117"
+    },
+    {
+      "rule": "dead_code",
+      "file": "crates/stratify-telemetry/src/emit.rs",
+      "line": 19,
+      "match": "resource",
+      "label": "fp",
+      "note": "called from crates/stratify-telemetry/src/emit.rs:56"
+    },
+    {
+      "rule": "dead_code",
+      "file": "crates/stratify-telemetry/src/emit.rs",
+      "line": 30,
+      "match": "header_map",
+      "label": "fp",
+      "note": "called from crates/stratify-telemetry/src/emit.rs:50"
+    },
+    {
+      "rule": "dead_code",
+      "file": "crates/stratify-telemetry/src/emit.rs",
+      "line": 36,
+      "match": "function `emit`",
+      "label": "fp",
+      "note": "called from crates/stratify-cli/src/main.rs:192"
+    }
+  ]
+}

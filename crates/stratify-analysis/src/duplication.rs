@@ -123,18 +123,35 @@ pub fn analyze(graph: &IrGraph, min_tokens: usize) -> Vec<Finding> {
             if valid_others.len() > 1 {
                 message.push_str(&format!(" and {} more", valid_others.len() - 1));
             }
-            findings.push(Finding {
-                rule: "duplication".into(),
-                severity: Severity::Warning,
+            let mut finding = Finding::new(
+                "duplication",
+                Severity::Warning,
                 message,
-                span: Span {
+                Span {
                     file: here.file.clone(),
                     start_byte: here.start_byte,
                     end_byte: last.end_byte,
                     start_line: here.start_line,
                 },
-                confidence: Confidence::Certain,
-            });
+                Confidence::Certain,
+            );
+            let mut sites = valid_others.clone();
+            sites.sort_unstable();
+            for o in sites {
+                finding = finding.with_related(
+                    Span {
+                        file: tokens[o].file.clone(),
+                        start_byte: tokens[o].start_byte,
+                        end_byte: tokens[o + k - 1].end_byte,
+                        start_line: tokens[o].start_line,
+                    },
+                    "clone",
+                    format!("same {k}-token block"),
+                );
+            }
+            findings.push(finding.with_reason(format!(
+                "{k} normalized tokens match exactly; identifiers, numbers, and strings are compared by kind"
+            )));
         }
     }
     findings
@@ -219,6 +236,25 @@ mod tests {
             "message should note the extra copy: {}",
             findings[0].message
         );
+    }
+
+    #[test]
+    fn clone_sites_become_related_evidence() {
+        let mut g = IrGraph::new();
+        let block = ["ID", "=", "ID", "+"];
+        push(&mut g, "a.rb", &block, 10);
+        push(&mut g, "b.rb", &block, 20);
+        push(&mut g, "c.rb", &block, 30);
+        let findings = analyze(&g, 4);
+        assert_eq!(findings.len(), 1);
+        let sites: Vec<&str> = findings[0]
+            .related
+            .iter()
+            .map(|r| r.span.file.as_str())
+            .collect();
+        assert_eq!(sites.len(), 2);
+        assert!(findings[0].related.iter().all(|r| r.role == "clone"));
+        assert!(findings[0].path.is_empty());
     }
 
     #[test]

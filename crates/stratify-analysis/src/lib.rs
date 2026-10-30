@@ -7,6 +7,7 @@ pub mod hotspot;
 pub mod ignore;
 pub mod imports;
 pub mod resolve;
+pub mod suppress;
 
 #[cfg(test)]
 pub(crate) mod test_support {
@@ -69,5 +70,29 @@ pub(crate) mod test_support {
     pub(crate) fn add_import(g: &mut IrGraph, from: SymbolId, key: &str) {
         let d = add_sym(g, SymbolKind::Dependency, key, key, "x");
         add_ref(g, from, d, RefKind::Imports, "x");
+    }
+
+    /// Like `add_import`, with the import's own span line and confidence.
+    pub(crate) fn add_import_at(
+        g: &mut IrGraph,
+        from: SymbolId,
+        key: &str,
+        file: &str,
+        line: usize,
+        confidence: Confidence,
+    ) {
+        let d = add_sym(g, SymbolKind::Dependency, key, key, "x");
+        g.add_reference(Reference {
+            from,
+            to: d,
+            kind: RefKind::Imports,
+            span: Span {
+                file: file.into(),
+                start_byte: 0,
+                end_byte: 1,
+                start_line: line,
+            },
+            confidence,
+        });
     }
 }

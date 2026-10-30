@@ -7,6 +7,58 @@ and versioning follows [Semantic Versioning](https://semver.org/) (pre-1.0,
 so a minor bump can still carry a behavior change; patch bumps stay
 backward-compatible).
 
+## [0.7.0] - 2026-10-12
+
+### Added
+- `stratify check` warns on stderr when a `stratify-ignore` marker names an
+  unknown rule id. The marker still suppresses nothing for that id.
+- `--stats` prints scan statistics (files, lines, functions, languages,
+  duration) as one `stratify-stats` JSON line on stderr.
+- Dependency cycles and layer boundaries for Rust. Every language now gets
+  all six analyses. Imports resolve through `crate::`, `self::`, `super::`,
+  and crate names read from each `Cargo.toml` in the scan.
+- A rule registry: each rule carries a name, category, default severity,
+  tags, and fix guidance. SARIF output now includes `help` text,
+  `defaultConfiguration`, and tags for every rule.
+- Findings carry evidence: `related` locations (clone sites, the file a
+  forbidden import points at), an ordered `path` (the files of a cycle), and
+  a `reasons` chain. `related` and `path` are omitted when empty. Every
+  analysis now attaches `reasons`, so each JSON finding gains a `reasons`
+  key and each SARIF result gains `properties`. Strict-schema consumers
+  need to allow both. The JSON schema stays at version 1. SARIF maps
+  `related` to `relatedLocations`, `path` to one ordered `codeFlows` thread
+  flow, and `reasons` to `properties.reasons` (and to the code flow's
+  message).
+- Comment suppression: a `stratify-ignore: <rule>` comment on a finding's
+  line or the line above hides that rule's finding there. Only real
+  comments count; the same text in a string literal is ignored.
+- `--write-baseline <file>` and `--baseline <file>`: record current findings,
+  then report and gate only new ones. The GitHub Action takes a `baseline`
+  input.
+
+### Changed
+- The Rust adapter records `use` declarations as imports, and a Rust file's
+  module key is now its own path instead of its parent directory.
+- Rust imports follow explicit `pub use` re-exports to the file that defines
+  the item. A Rust cycle or boundary violation that rests on an import
+  landing on an unconfirmed re-exporting module (for example a glob
+  re-export) now reports at Info with likely confidence, not Warning.
+- Cycle and boundary findings now point at the import line, so a
+  `stratify-ignore` marker on or above the import suppresses them. A marker
+  above an attribute (Rust) or decorator (Python) now covers the item below.
+
+### Fixed
+- Dead-code analysis indexes call edges by source, so large repositories
+  finish. A scan of Kubernetes v1.31.0 (15,372 files, 4.5 million lines) now
+  completes in 90.27 s. Output is unchanged.
+- A source file that cannot be read, including one that is not valid UTF-8,
+  is skipped and counted in the new `files_skipped` stat instead of aborting
+  the scan. `lines_scanned` now
+  counts only files that parsed, so it matches `files_scanned`.
+- The GitHub Action passes its inputs as environment variables instead of
+  interpolating them into the shell script, so a path with spaces or shell
+  syntax is passed through literally.
+
 ## [0.6.0] - 2026-09-01
 
 ### Added

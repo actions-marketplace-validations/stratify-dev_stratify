@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use stratify_core::ir::SymbolId;
 use stratify_core::{Confidence, Finding, IrGraph, RefKind, Severity, SymbolKind, Visibility};
 
@@ -52,14 +52,19 @@ pub fn analyze(graph: &IrGraph, mode: DeadCodeMode) -> Vec<Finding> {
         reached_any.insert(*r);
     }
 
+    // Index the use-edges by source once, so each popped node touches only
+    // its own outgoing edges instead of every reference in the graph.
+    let mut outgoing: HashMap<SymbolId, Vec<usize>> = HashMap::new();
+    for (i, r) in graph.references().iter().enumerate() {
+        if matches!(r.kind, RefKind::Calls | RefKind::Inherits) {
+            outgoing.entry(r.from).or_default().push(i);
+        }
+    }
+    let references = graph.references();
+
     while let Some((node, path_certain)) = queue.pop() {
-        for r in graph.references() {
-            if r.from != node {
-                continue;
-            }
-            if !matches!(r.kind, RefKind::Calls | RefKind::Inherits) {
-                continue;
-            }
+        for &i in outgoing.get(&node).map(Vec::as_slice).unwrap_or(&[]) {
+            let r = &references[i];
             let edge_certain = path_certain && r.confidence == Confidence::Certain;
             let newly_certain = edge_certain && reached_certain.insert(r.to);
             let newly_any = reached_any.insert(r.to);
@@ -80,21 +85,34 @@ pub fn analyze(graph: &IrGraph, mode: DeadCodeMode) -> Vec<Finding> {
         let low_confidence = reached_any.contains(&s.id)
             || (s.visibility == Visibility::Public && mode == DeadCodeMode::Library);
         if low_confidence {
-            findings.push(Finding {
-                rule: "dead_code".into(),
-                severity: Severity::Info,
-                message: format!("possibly unused function `{}`", s.name),
-                span: s.span.clone(),
-                confidence: Confidence::Likely,
-            });
+            let mut finding = Finding::new(
+                "dead_code",
+                Severity::Info,
+                format!("possibly unused function `{}`", s.name),
+                s.span.clone(),
+                Confidence::Likely,
+            );
+            if reached_any.contains(&s.id) {
+                finding = finding.with_reason(
+                    "reached only through a name-matched call, which cannot prove this exact function is the target",
+                );
+            }
+            if s.visibility == Visibility::Public && mode == DeadCodeMode::Library {
+                finding = finding
+                    .with_reason("public in library mode: code outside this scan may call it");
+            }
+            findings.push(finding);
         } else {
-            findings.push(Finding {
-                rule: "dead_code".into(),
-                severity: Severity::Warning,
-                message: format!("unused function `{}`", s.name),
-                span: s.span.clone(),
-                confidence: Confidence::Certain,
-            });
+            findings.push(
+                Finding::new(
+                    "dead_code",
+                    Severity::Warning,
+                    format!("unused function `{}`", s.name),
+                    s.span.clone(),
+                    Confidence::Certain,
+                )
+                .with_reason("no call from any entrypoint reaches this function"),
+            );
         }
     }
     findings
@@ -155,6 +173,31 @@ mod tests {
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].severity, Severity::Warning);
         assert!(findings[0].message.contains("orphan"));
+    }
+
+    #[test]
+    fn certain_dead_code_explains_why() {
+        let mut g = IrGraph::new();
+        func(&mut g, "orphan");
+        let f = &analyze(&g, DeadCodeMode::Library)[0];
+        assert_eq!(
+            f.reasons,
+            vec!["no call from any entrypoint reaches this function"]
+        );
+    }
+
+    #[test]
+    fn public_library_symbol_explains_why() {
+        let mut g = IrGraph::new();
+        sym_with_visibility(&mut g, "api", Visibility::Public);
+        let f = &analyze(&g, DeadCodeMode::Library)[0];
+        assert!(
+            f.reasons
+                .iter()
+                .any(|r| r.contains("public in library mode")),
+            "{:?}",
+            f.reasons
+        );
     }
 
     #[test]
@@ -228,6 +271,42 @@ mod tests {
             assert_eq!(findings.len(), 1, "mode: {mode:?}");
             assert_eq!(findings[0].severity, Severity::Warning, "mode: {mode:?}");
         }
+    }
+
+    #[test]
+    fn reachability_follows_calls_and_inherits_but_not_other_edges() {
+        use crate::test_support::add_ref;
+
+        let mut g = IrGraph::new();
+        let main = func(&mut g, "main");
+        g.mark_entrypoint(main);
+        let via_call = func(&mut g, "viaCall");
+        let via_inherit = func(&mut g, "viaInherit");
+        let via_chain = func(&mut g, "viaChain");
+        let via_imports = func(&mut g, "viaImports");
+        add_ref(&mut g, main, via_call, RefKind::Calls, "T.java");
+        add_ref(&mut g, main, via_inherit, RefKind::Inherits, "T.java");
+        add_ref(&mut g, via_call, via_chain, RefKind::Calls, "T.java");
+        add_ref(&mut g, main, via_imports, RefKind::Imports, "T.java");
+
+        let findings = analyze(&g, DeadCodeMode::Library);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(findings[0].message.contains("viaImports"));
+    }
+
+    #[test]
+    fn certain_path_is_upgraded_after_an_uncertain_visit() {
+        // `b` is first reached through a Likely edge, then through a Certain
+        // path. The Certain visit must still propagate to `c`.
+        let mut g = IrGraph::new();
+        let main = func(&mut g, "main");
+        g.mark_entrypoint(main);
+        let b = func(&mut g, "b");
+        let c = func(&mut g, "c");
+        edge(&mut g, main, b, Confidence::Likely);
+        edge(&mut g, main, b, Confidence::Certain);
+        edge(&mut g, b, c, Confidence::Certain);
+        assert!(analyze(&g, DeadCodeMode::Library).is_empty());
     }
 
     #[test]

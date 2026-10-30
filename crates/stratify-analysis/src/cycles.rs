@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use crate::imports::ImportGraph;
+use std::collections::{BTreeSet, HashMap};
 use stratify_core::ir::Span;
 use stratify_core::{Confidence, Finding, IrGraph, Severity};
 
@@ -9,6 +10,7 @@ use stratify_core::{Confidence, Finding, IrGraph, Severity};
 pub fn analyze(graph: &IrGraph) -> Vec<Finding> {
     let adj = crate::imports::fqn_import_graph(graph);
     let spans = crate::imports::fqn_spans(graph);
+    let import_spans = crate::imports::fqn_import_spans(graph);
 
     // DFS back-edge detection. Colors: 0 = white, 1 = gray (on stack), 2 = black.
     let mut color: HashMap<String, u8> = HashMap::new();
@@ -34,26 +36,62 @@ pub fn analyze(graph: &IrGraph) -> Vec<Finding> {
                     .unwrap_or_else(|| fqn.clone())
             })
             .collect();
-        let span = spans.get(&cycle[0]).cloned().unwrap_or(Span {
+        let fallback = Span {
             file: files[0].clone(),
             start_byte: 0,
             end_byte: 0,
             start_line: 1,
+        };
+        // The span of the import that makes `cycle[i]` depend on its successor,
+        // so a suppression marker can sit on that line.
+        let edge_span = |i: usize| {
+            let next = &cycle[(i + 1) % cycle.len()];
+            import_spans
+                .get(&(cycle[i].clone(), next.clone()))
+                .or_else(|| spans.get(&cycle[i]))
+                .cloned()
+                .unwrap_or_else(|| fallback.clone())
+        };
+        let span = edge_span(0);
+        // One unconfirmed (re-export) edge makes the whole cycle unconfirmed.
+        let unconfirmed = (0..cycle.len()).any(|i| {
+            let next = &cycle[(i + 1) % cycle.len()];
+            adj.get(&cycle[i]).and_then(|m| m.get(next)) == Some(&Confidence::Likely)
         });
-        findings.push(Finding {
-            rule: "cycle".into(),
-            severity: Severity::Warning,
-            message: format!("circular dependency: {}", files.join(" -> ")),
+        let (severity, confidence) = if unconfirmed {
+            (Severity::Info, Confidence::Likely)
+        } else {
+            (Severity::Warning, Confidence::Certain)
+        };
+        let mut finding = Finding::new(
+            "cycle",
+            severity,
+            format!("circular dependency: {}", files.join(" -> ")),
             span,
-            confidence: Confidence::Certain,
-        });
+            confidence,
+        );
+        for i in 0..cycle.len() {
+            finding = finding.with_path_step(
+                edge_span(i),
+                "cycle_member",
+                format!("imports {}", files[(i + 1) % files.len()]),
+            );
+        }
+        finding = finding
+            .with_reason("each file in the cycle imports the next, and the last imports the first");
+        if unconfirmed {
+            finding = finding.with_reason(
+                "one or more imports in this cycle land on a re-exporting module, not the file that defines the item",
+            );
+        }
+        findings.push(finding);
     }
     findings
 }
 
 fn dfs(
     node: &str,
-    adj: &BTreeMap<String, BTreeSet<String>>,
+    adj: &ImportGraph,
     color: &mut HashMap<String, u8>,
     path: &mut Vec<String>,
     reported: &mut BTreeSet<Vec<String>>,
@@ -61,7 +99,7 @@ fn dfs(
     color.insert(node.to_string(), 1);
     path.push(node.to_string());
     if let Some(neighbors) = adj.get(node) {
-        for next in neighbors {
+        for next in neighbors.keys() {
             match color.get(next).copied().unwrap_or(0) {
                 0 => dfs(next, adj, color, path, reported),
                 1 => {
@@ -96,7 +134,7 @@ fn canonical_cycle(nodes: &[String]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{add_import, file_sym};
+    use crate::test_support::{add_import, add_import_at, file_sym};
 
     #[test]
     fn detects_two_file_cycle() {
@@ -110,6 +148,24 @@ mod tests {
         assert_eq!(findings[0].rule, "cycle");
         assert!(findings[0].message.contains("a.rb"));
         assert!(findings[0].message.contains("b.rb"));
+    }
+
+    #[test]
+    fn cycle_records_members_as_an_ordered_path() {
+        let mut g = IrGraph::new();
+        let a = file_sym(&mut g, "a.rb");
+        let b = file_sym(&mut g, "b.rb");
+        let c = file_sym(&mut g, "c.rb");
+        add_import_at(&mut g, a, "b.rb", "a.rb", 1, Confidence::Certain);
+        add_import_at(&mut g, b, "c.rb", "b.rb", 1, Confidence::Certain);
+        add_import_at(&mut g, c, "a.rb", "c.rb", 1, Confidence::Certain);
+        let f = &analyze(&g)[0];
+        let files: Vec<&str> = f.path.iter().map(|r| r.span.file.as_str()).collect();
+        assert_eq!(files, vec!["a.rb", "b.rb", "c.rb"]);
+        assert!(f.path.iter().all(|r| r.role == "cycle_member"));
+        assert_eq!(f.path[2].message, "imports a.rb");
+        assert!(f.related.is_empty());
+        assert!(!f.reasons.is_empty());
     }
 
     #[test]
@@ -141,5 +197,65 @@ mod tests {
         let findings = analyze(&g);
         assert_eq!(findings.len(), 1, "one cycle, not one per entry point");
         assert!(findings[0].message.contains("a.rb -> b.rb -> c.rb"));
+    }
+
+    #[test]
+    fn cycle_with_a_likely_edge_reports_info_likely() {
+        let mut g = IrGraph::new();
+        let a = file_sym(&mut g, "a.rs");
+        let b = file_sym(&mut g, "b.rs");
+        add_import_at(&mut g, a, "b.rs", "a.rs", 1, Confidence::Certain);
+        add_import_at(&mut g, b, "a.rs", "b.rs", 1, Confidence::Likely);
+        let findings = analyze(&g);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].severity, Severity::Info);
+        assert_eq!(findings[0].confidence, Confidence::Likely);
+        assert!(findings[0].message.contains("a.rs -> b.rs"));
+        assert!(findings[0]
+            .reasons
+            .iter()
+            .any(|r| r.contains("re-exporting module")));
+    }
+
+    #[test]
+    fn cycle_with_only_certain_edges_stays_warning() {
+        let mut g = IrGraph::new();
+        let a = file_sym(&mut g, "a.rs");
+        let b = file_sym(&mut g, "b.rs");
+        add_import_at(&mut g, a, "b.rs", "a.rs", 1, Confidence::Certain);
+        add_import_at(&mut g, b, "a.rs", "b.rs", 1, Confidence::Certain);
+        let findings = analyze(&g);
+        assert_eq!(findings[0].severity, Severity::Warning);
+        assert_eq!(findings[0].confidence, Confidence::Certain);
+        assert!(findings[0]
+            .reasons
+            .iter()
+            .all(|r| !r.contains("re-exporting module")));
+    }
+
+    #[test]
+    fn cycle_points_at_each_import_line() {
+        let mut g = IrGraph::new();
+        let a = file_sym(&mut g, "a.rs");
+        let b = file_sym(&mut g, "b.rs");
+        add_import_at(&mut g, a, "b.rs", "a.rs", 3, Confidence::Certain);
+        add_import_at(&mut g, b, "a.rs", "b.rs", 7, Confidence::Certain);
+        let f = &analyze(&g)[0];
+        assert_eq!((f.span.file.as_str(), f.span.start_line), ("a.rs", 3));
+        assert_eq!(f.path[0].span.start_line, 3);
+        assert_eq!(f.path[1].span.file, "b.rs");
+        assert_eq!(f.path[1].span.start_line, 7);
+    }
+
+    #[test]
+    fn cycle_uses_the_earliest_import_between_a_pair() {
+        let mut g = IrGraph::new();
+        let a = file_sym(&mut g, "a.rs");
+        let b = file_sym(&mut g, "b.rs");
+        add_import_at(&mut g, a, "b.rs", "a.rs", 9, Confidence::Certain);
+        add_import_at(&mut g, a, "b.rs", "a.rs", 2, Confidence::Certain);
+        add_import_at(&mut g, b, "a.rs", "b.rs", 1, Confidence::Certain);
+        let f = &analyze(&g)[0];
+        assert_eq!(f.span.start_line, 2);
     }
 }

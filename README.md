@@ -123,7 +123,7 @@ stratify check . --fail-on warning
 
 ## The six analyses
 
-They all run in a single pass. Java, Ruby, TypeScript, Python, and Go get all six; Rust gets the first four today (see below).
+They all run in a single pass. Java, Ruby, TypeScript, Python, Go, and Rust get all six.
 
 | Analysis | What it finds |
 |----------|---------------|
@@ -144,7 +144,7 @@ With no `stratify.toml`, Stratify guesses `application` mode from an explicit "n
 
 ## Six languages, one engine
 
-Java, Ruby, TypeScript, Python, and Go each get the full set of six analyses. Rust gets dead code, duplication, complexity, and churn hotspots today. Dependency cycles and layer boundaries for Rust need module/`use` resolution, which is on the roadmap. Adding a language adds one adapter and changes no analysis code, because every analysis reads the shared model, not the source.
+All six languages get all six analyses. Rust import resolution follows `crate::`, `self::`, `super::`, and paths that start with the name of a crate in the scan. Paths into external crates form no edge. Adding a language adds one adapter and changes no analysis code, because every analysis reads the shared model, not the source.
 
 ## Output formats
 
@@ -154,19 +154,43 @@ stratify check . --format json   # structured findings for tooling
 stratify check . --format sarif  # SARIF 2.1.0 for code scanning
 ```
 
+## Scan statistics
+
+```sh
+stratify check . --stats
+```
+
+`--stats` prints one `stratify-stats {json}` line on stderr with `files_scanned`, `lines_scanned`, `files_skipped`, `functions`, `languages`, and `duration_ms`. Stdout stays unchanged, so you can pipe findings and read the stats side by side.
+
+`files_scanned` and `lines_scanned` cover the same files, the ones that parsed. A source file that cannot be read (including invalid UTF-8) or that the parser rejects is skipped. Stratify prints `stratify: skipped <file>: <reason>` on stderr, counts the file in `files_skipped`, and continues the scan.
+
+## Suppress a finding
+
+Put `stratify-ignore: <rule>` in a comment on the finding's line or the line above. Name one rule or a comma-separated list. A rule id is required, so a suppression never hides more than you meant. Text after the first word of each item is ignored, so you can give a reason. An unknown rule id prints a warning and suppresses nothing.
+
+```ruby
+# stratify-ignore: dead_code -- called by the framework
+def after_commit_hook
+end
+```
+
+The marker counts only inside a comment: `//`, `/* */`, and `///` in Java, TypeScript, Go, and Rust, and `#` in Ruby and Python, plus Ruby's `=begin`/`=end`. The same text inside a string literal or a Python docstring does nothing. A block comment counts when it ends on the line above the finding. Cycle and boundary findings point at the import line, so put the marker on or above the import.
+
+Rule ids: `dead_code`, `duplication`, `complexity`, `hotspot`, `cycle`, `boundary`. A finding's `rule` field in JSON output shows its id.
+
 ## CI quality gate (GitHub Action)
 
 Drop Stratify into any workflow as a gate:
 
 ```yaml
 - uses: actions/checkout@v4
-- uses: stratify-dev/stratify@v0.6.0
+- uses: stratify-dev/stratify@v0.7.0
   with:
     path: .
     fail-on: warning
 ```
 
-The step fails the job when at least one finding meets or exceeds the `fail-on` threshold. Pin to a released tag for stable runs, for example `@v0.6.0`. `@main` tracks the latest. The Action downloads a prebuilt binary, so it starts in seconds.
+The step fails the job when at least one finding meets or exceeds the `fail-on` threshold. Pin to a released tag for stable runs, for example `@v0.7.0`. `@main` tracks the latest. The Action downloads a prebuilt binary, so it starts in seconds.
 
 ### Action inputs
 
@@ -175,6 +199,20 @@ The step fails the job when at least one finding meets or exceeds the `fail-on` 
 | `path` | `.` | Directory to analyze. |
 | `fail-on` | `warning` | Minimum severity that fails the step: `never`, `info`, `warning`, or `error`. |
 | `format` | `human` | Output format: `human`, `json`, or `sarif`. |
+| `baseline` | `''` | Baseline file. Only findings absent from it are reported and gated. |
+
+Paths in `path` and `baseline` may contain spaces. Both are relative to the job's working directory. The Action passes inputs as environment variables, never as shell text.
+
+## Adopt on an existing codebase (baseline)
+
+Record today's findings once, commit the file, and gate only on new ones:
+
+```sh
+stratify check . --write-baseline stratify-baseline.json
+stratify check . --baseline stratify-baseline.json --fail-on warning
+```
+
+A baselined finding stays baselined when code above it moves. A missing or unreadable baseline file exits with code 2, so a broken path never passes the gate.
 
 ## SARIF and GitHub code scanning
 
@@ -188,7 +226,7 @@ Upload it to GitHub code scanning:
 
 ```yaml
 - uses: actions/checkout@v4
-- uses: stratify-dev/stratify@v0.6.0
+- uses: stratify-dev/stratify@v0.7.0
   with:
     fail-on: never
 - run: stratify check . --format sarif > stratify.sarif
@@ -294,4 +332,4 @@ The diagram above is the whole architecture. tree-sitter turns source into the U
 
 ## Status
 
-Six analyses across six languages (Rust covers four today, with cycles and boundaries pending import resolution), exposed through every surface: CLI, JSON, SARIF, GitHub Action, MCP, LSP, and OpenTelemetry export. Stratify lives at [github.com/stratify-dev/stratify](https://github.com/stratify-dev/stratify).
+Six analyses across six languages, exposed through every surface: CLI, JSON, SARIF, GitHub Action, MCP, LSP, and OpenTelemetry export. Stratify lives at [github.com/stratify-dev/stratify](https://github.com/stratify-dev/stratify).

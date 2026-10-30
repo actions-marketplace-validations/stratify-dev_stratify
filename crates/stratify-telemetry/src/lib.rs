@@ -218,18 +218,18 @@ mod tests {
     use stratify_core::{ir::Span, Finding};
 
     fn finding(rule: &str, sev: Severity, file: &str, conf: Confidence) -> Finding {
-        Finding {
-            rule: rule.into(),
-            severity: sev,
-            message: "m".into(),
-            span: Span {
+        Finding::new(
+            rule,
+            sev,
+            "m",
+            Span {
                 file: file.into(),
                 start_byte: 0,
                 end_byte: 1,
                 start_line: 1,
             },
-            confidence: conf,
-        }
+            conf,
+        )
     }
 
     #[test]

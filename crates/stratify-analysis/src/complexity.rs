@@ -19,16 +19,21 @@ pub fn analyze(graph: &IrGraph, threshold: u32) -> Vec<Finding> {
         } else {
             Severity::Info
         };
-        findings.push(Finding {
-            rule: "complexity".into(),
-            severity,
-            message: format!(
-                "function `{}` has high cyclomatic complexity ({cx})",
-                s.name
-            ),
-            span: s.span.clone(),
-            confidence: Confidence::Certain,
-        });
+        findings.push(
+            Finding::new(
+                "complexity",
+                severity,
+                format!(
+                    "function `{}` has high cyclomatic complexity ({cx})",
+                    s.name
+                ),
+                s.span.clone(),
+                Confidence::Certain,
+            )
+            .with_reason(format!(
+                "{cx} independent paths exceed the threshold of {threshold}"
+            )),
+        );
     }
     findings
 }

@@ -31,6 +31,11 @@ pub enum Format {
 #[derive(Debug, Clone)]
 pub struct ScanStats {
     pub files_scanned: u64,
+    pub lines_scanned: u64,
+    /// Source files an adapter handles but that could not be read or parsed.
+    pub files_skipped: u64,
+    /// Rule ids named in stratify-ignore markers that no rule matches, as (file, line, id).
+    pub unknown_suppression_rules: Vec<(String, usize, String)>,
     pub functions: u64,
     pub complexity_max: u32,
     pub complexity_mean: f64,
@@ -53,7 +58,7 @@ fn lang_of_file(path: &str) -> Option<&'static str> {
 }
 
 /// Compute repo-wide stats from the merged IR plus the measured wall time.
-pub fn scan_stats(graph: &IrGraph, duration_ms: u64) -> ScanStats {
+pub fn scan_stats(graph: &IrGraph, duration_ms: u64, lines_scanned: u64) -> ScanStats {
     let mut files_scanned = 0u64;
     let mut functions = 0u64;
     let mut languages = BTreeSet::new();
@@ -78,6 +83,9 @@ pub fn scan_stats(graph: &IrGraph, duration_ms: u64) -> ScanStats {
     };
     ScanStats {
         files_scanned,
+        lines_scanned,
+        files_skipped: 0,
+        unknown_suppression_rules: Vec::new(),
         functions,
         complexity_max,
         complexity_mean,
@@ -108,6 +116,9 @@ pub fn analyze_repo_with_stats(root: &Path) -> std::io::Result<(Report, ScanStat
 
     let ignore_globs = load_ignore_globs(root);
     let mut graph = IrGraph::new();
+    let mut rust_crates: Vec<stratify_analysis::resolve::RustCrate> = Vec::new();
+    let mut lines_scanned: u64 = 0;
+    let mut files_skipped: u64 = 0;
     for entry in WalkBuilder::new(root).build() {
         let entry = match entry {
             Ok(e) => e,
@@ -117,6 +128,19 @@ pub fn analyze_repo_with_stats(root: &Path) -> std::io::Result<(Report, ScanStat
             continue;
         }
         let path = entry.path();
+        if path.file_name().and_then(|n| n.to_str()) == Some("Cargo.toml") {
+            let rel = path
+                .strip_prefix(root)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .to_string();
+            if !ignore_globs.is_match(&rel) {
+                if let Some(c) = rust_crate_of(root, path) {
+                    rust_crates.push(c);
+                }
+            }
+            continue;
+        }
         let ext = match path.extension().and_then(|e| e.to_str()) {
             Some(e) => e,
             None => continue,
@@ -125,7 +149,6 @@ pub fn analyze_repo_with_stats(root: &Path) -> std::io::Result<(Report, ScanStat
             Some(a) => a,
             None => continue,
         };
-        let source = std::fs::read_to_string(path)?;
         let rel = path
             .strip_prefix(root)
             .unwrap_or(path)
@@ -134,13 +157,29 @@ pub fn analyze_repo_with_stats(root: &Path) -> std::io::Result<(Report, ScanStat
         if ignore_globs.is_match(&rel) {
             continue;
         }
-        if let Ok(file_graph) = adapter.parse_file(&rel, &source) {
-            graph.merge(file_graph);
+        let source = match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("stratify: skipped {rel}: {e}");
+                files_skipped += 1;
+                continue;
+            }
+        };
+        match adapter.parse_file(&rel, &source) {
+            Ok(file_graph) => {
+                lines_scanned += source.lines().count() as u64;
+                graph.merge(file_graph);
+            }
+            Err(e) => {
+                eprintln!("stratify: skipped {rel}: {e}");
+                files_skipped += 1;
+            }
         }
     }
 
     stratify_analysis::resolve::cross_file_calls(&mut graph);
     stratify_analysis::resolve::go_imports(&mut graph);
+    stratify_analysis::resolve::rust_imports(&mut graph, &rust_crates);
     stratify_analysis::resolve::promote_intra_file_calls(&mut graph);
 
     let mut findings = deadcode::analyze(&graph, load_dead_code_mode(root));
@@ -162,13 +201,42 @@ pub fn analyze_repo_with_stats(root: &Path) -> std::io::Result<(Report, ScanStat
         &graph,
         &boundary_config,
     ));
-    let stats = scan_stats(&graph, start.elapsed().as_millis() as u64);
+    let (findings, _suppressed) = stratify_analysis::suppress::apply(&graph, findings);
+    let mut stats = scan_stats(&graph, start.elapsed().as_millis() as u64, lines_scanned);
+    stats.files_skipped = files_skipped;
+    stats.unknown_suppression_rules = graph
+        .suppressions()
+        .iter()
+        .flat_map(|s| {
+            s.rules
+                .iter()
+                .filter(|r| stratify_core::rule::rule(r).is_none())
+                .map(|r| (s.file.clone(), s.start_line, r.clone()))
+        })
+        .collect();
     Ok((Report::new(findings), stats))
 }
 
 /// Convenience wrapper for callers that only need the Report (mcp, lsp).
 pub fn analyze_repo(root: &Path) -> std::io::Result<Report> {
     Ok(analyze_repo_with_stats(root)?.0)
+}
+
+/// Read a Cargo manifest's `[package] name` and pair it with the package's
+/// `src` directory (relative to the scan root). A manifest with no
+/// `[package]` (a bare `[workspace]` root) yields None. A custom
+/// `[lib] name` or `path` is not read.
+fn rust_crate_of(root: &Path, manifest: &Path) -> Option<stratify_analysis::resolve::RustCrate> {
+    let text = std::fs::read_to_string(manifest).ok()?;
+    let doc: toml::Value = text.parse().ok()?;
+    let name = doc.get("package")?.get("name")?.as_str()?.replace('-', "_");
+    let src = manifest.parent()?.join("src");
+    let src_dir = src
+        .strip_prefix(root)
+        .unwrap_or(&src)
+        .to_string_lossy()
+        .to_string();
+    Some(stratify_analysis::resolve::RustCrate { name, src_dir })
 }
 
 /// Load `[ignore] paths` globs from `stratify.toml` at the scan root.
@@ -322,18 +390,18 @@ mod tests {
     }
 
     fn make_report(severity: Severity) -> Report {
-        Report::new(vec![Finding {
-            rule: "dead_code".into(),
+        Report::new(vec![Finding::new(
+            "dead_code",
             severity,
-            message: "unused".into(),
-            span: Span {
+            "unused",
+            Span {
                 file: "A.java".into(),
                 start_byte: 0,
                 end_byte: 1,
                 start_line: 1,
             },
-            confidence: Confidence::Certain,
-        }])
+            Confidence::Certain,
+        )])
     }
 
     #[test]
@@ -471,6 +539,21 @@ mod tests {
             deadcode::DeadCodeMode::Library
         );
     }
+    #[test]
+    fn rust_crate_of_reads_package_name_and_src_dir() {
+        let dir = temp_dir("rust-crate-of");
+        std::fs::create_dir_all(dir.join("crates/my-core")).unwrap();
+        std::fs::write(
+            dir.join("crates/my-core/Cargo.toml"),
+            "[package]\nname = \"my-core\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("Cargo.toml"), "[workspace]\nmembers = []\n").unwrap();
+        let c = rust_crate_of(&dir, &dir.join("crates/my-core/Cargo.toml")).unwrap();
+        assert_eq!(c.name, "my_core");
+        assert_eq!(c.src_dir, "crates/my-core/src");
+        assert!(rust_crate_of(&dir, &dir.join("Cargo.toml")).is_none());
+    }
 }
 
 #[cfg(test)]
@@ -506,7 +589,7 @@ mod stats_tests {
         g.set_complexity(f1, 4);
         g.set_complexity(f2, 10);
 
-        let stats = scan_stats(&g, 123);
+        let stats = scan_stats(&g, 123, 0);
         assert_eq!(stats.files_scanned, 2);
         assert_eq!(stats.functions, 2);
         assert_eq!(stats.complexity_max, 10);
@@ -519,11 +602,37 @@ mod stats_tests {
     #[test]
     fn scan_stats_empty_graph_is_zero() {
         let g = IrGraph::new();
-        let stats = scan_stats(&g, 0);
+        let stats = scan_stats(&g, 0, 0);
         assert_eq!(stats.files_scanned, 0);
         assert_eq!(stats.functions, 0);
         assert_eq!(stats.complexity_max, 0);
         assert_eq!(stats.complexity_mean, 0.0);
         assert!(stats.languages.is_empty());
+    }
+
+    #[test]
+    fn scan_counts_lines_of_parsed_files_only() {
+        let dir = std::env::temp_dir().join("stratify-stats-lines");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.rb"), "def a\nend\n\na\n").unwrap(); // 4 lines
+        std::fs::write(dir.join("notes.txt"), "not\nsource\n").unwrap(); // not parsed
+        let (_, stats) = analyze_repo_with_stats(&dir).unwrap();
+        assert_eq!(stats.files_scanned, 1);
+        assert_eq!(stats.lines_scanned, 4);
+    }
+
+    #[test]
+    fn non_utf8_file_is_skipped_and_counted() {
+        let dir = std::env::temp_dir().join("stratify-stats-skipped");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.rb"), "def a\nend\n\na\n").unwrap(); // 4 lines
+        std::fs::write(dir.join("b.rb"), [0x64, 0x65, 0x66, 0x20, 0xff, 0xfe, 0x0a]).unwrap();
+        std::fs::write(dir.join("notes.txt"), "not\nsource\n").unwrap();
+        let (_, stats) = analyze_repo_with_stats(&dir).unwrap();
+        assert_eq!(stats.files_scanned, 1);
+        assert_eq!(stats.lines_scanned, 4);
+        assert_eq!(stats.files_skipped, 1);
     }
 }

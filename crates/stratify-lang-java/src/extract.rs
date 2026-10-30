@@ -335,6 +335,15 @@ pub(crate) fn extract(file: &str, src: &str) -> IrGraph {
     });
 
     walk::tokenize(&mut g, root, src, file, &normalize_rules());
+    walk::collect_suppressions(
+        &mut g,
+        root,
+        src,
+        file,
+        &["line_comment", "block_comment"],
+        &[],
+        &[],
+    );
 
     extract_declarations(&mut g, root, src, file, file_id);
     extract_imports(&mut g, root, src, file, file_id);
@@ -516,5 +525,23 @@ mod tests {
             .references()
             .iter()
             .any(|r| matches!(r.kind, RefKind::Imports) && r.from == file_id && r.to == dep_id));
+    }
+
+    #[test]
+    fn suppression_markers_come_only_from_comments() {
+        let src = "class A {\n  // stratify-ignore: dead_code\n  void a() {}\n  String s = \"stratify-ignore: complexity\";\n  /* stratify-ignore: duplication */\n  void c() {}\n}\n";
+        let g = extract("A.java", src);
+        let got: Vec<(usize, usize, Vec<String>)> = g
+            .suppressions()
+            .iter()
+            .map(|s| (s.start_line, s.end_line, s.rules.clone()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (2, 2, vec!["dead_code".to_string()]),
+                (5, 5, vec!["duplication".to_string()])
+            ]
+        );
     }
 }

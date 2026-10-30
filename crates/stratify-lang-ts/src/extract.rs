@@ -1,7 +1,8 @@
 use stratify_core::ir::SymbolId;
 use stratify_core::{Confidence, IrGraph, RefKind, Reference, Symbol, SymbolKind, Visibility};
 use stratify_lang::walk::{
-    cyclomatic, enclosing, node_text, span, tokenize, ComplexityRules, NormalizeRules,
+    collect_suppressions, cyclomatic, enclosing, node_text, span, tokenize, ComplexityRules,
+    NormalizeRules,
 };
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Node, Parser, Query, QueryCursor};
@@ -367,6 +368,7 @@ pub(crate) fn extract(file: &str, src: &str) -> IrGraph {
 
     let file_id = add_file_symbol(&mut g, file, root);
     tokenize(&mut g, root, src, file, &normalize_rules());
+    collect_suppressions(&mut g, root, src, file, &["comment"], &[], &[]);
     extract_declarations(&mut g, &lang, root, src, file, file_id);
     extract_imports(&mut g, &lang, root, src, file, file_id);
     extract_calls(&mut g, &lang, root, src, file, file_id);
@@ -548,6 +550,24 @@ mod tests {
                 .any(|(from, name)| *from == m_id && name == "external"),
             "expected unresolved call (m, external); got {:?}",
             g.unresolved_calls()
+        );
+    }
+
+    #[test]
+    fn suppression_markers_come_only_from_comments() {
+        let src = "// stratify-ignore: dead_code\nfunction a() {}\nconst s = \"stratify-ignore: complexity\";\n/* stratify-ignore: duplication */\nfunction c() {}\n";
+        let g = extract("a.ts", src);
+        let got: Vec<(usize, usize, Vec<String>)> = g
+            .suppressions()
+            .iter()
+            .map(|s| (s.start_line, s.end_line, s.rules.clone()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (1, 1, vec!["dead_code".to_string()]),
+                (4, 4, vec!["duplication".to_string()])
+            ]
         );
     }
 }
